@@ -16,6 +16,8 @@ public sealed class SekoTransactionalAgent :
 
     private bool _completedObserved;
 
+    private SekoTaskLogger.TaskLogSession? _currentLogSession;
+
     public event Action<AgentActivity>? ActivityChanged;
 
     public SekoTransactionalAgent(
@@ -36,6 +38,13 @@ public sealed class SekoTransactionalAgent :
         {
             activitySource.ActivityChanged +=
                 InnerAgent_ActivityChanged;
+        }
+
+        if (_innerAgent
+            is ISekoDiagnosticSource diagnosticSource)
+        {
+            diagnosticSource.DiagnosticEvent +=
+                InnerAgent_DiagnosticEvent;
         }
     }
 
@@ -59,11 +68,14 @@ public sealed class SekoTransactionalAgent :
                 "SEKO_OLLAMA_MODEL")
             ?? "qwen3:8b";
 
-        var logSession =
+        _currentLogSession =
             _taskLogger.TryStart(
                 _workspace,
                 modelName,
                 userRequest);
+
+        var logSession =
+            _currentLogSession;
 
         var transaction =
             await GitTaskTransaction.BeginAsync(
@@ -159,6 +171,54 @@ public sealed class SekoTransactionalAgent :
                 true;
         }
 
+        _taskLogger.TryRecordActivity(
+            _currentLogSession,
+            activity);
+
+        ActivityChanged?.Invoke(
+            activity);
+    }
+
+    private void InnerAgent_DiagnosticEvent(
+        SekoDiagnosticEvent diagnosticEvent)
+    {
+        _taskLogger.TryRecordDiagnostic(
+            _currentLogSession,
+            diagnosticEvent);
+    }
+
+    public void RecordExternalActivity(
+        AgentActivity activity)
+    {
+        _taskLogger.TryRecordActivity(
+            _currentLogSession,
+            activity);
+    }
+
+    public void RecordExternalDiagnostic(
+        SekoDiagnosticEvent diagnosticEvent)
+    {
+        _taskLogger.TryRecordDiagnostic(
+            _currentLogSession,
+            diagnosticEvent);
+    }
+
+    public void RefreshCompletedLog(
+        string finalResponse)
+    {
+        _taskLogger.TryFinish(
+            _currentLogSession,
+            "Completed",
+            finalResponse);
+    }
+
+    private void ReportActivity(
+        AgentActivity activity)
+    {
+        _taskLogger.TryRecordActivity(
+            _currentLogSession,
+            activity);
+
         ActivityChanged?.Invoke(
             activity);
     }
@@ -166,8 +226,27 @@ public sealed class SekoTransactionalAgent :
     private async Task<RollbackResult> RollbackAsync(
         GitTaskTransaction transaction)
     {
+        var startedAt =
+            DateTimeOffset.Now;
+
+        var stopwatch =
+            Stopwatch.StartNew();
+
         if (!transaction.IsEnabled)
         {
+            stopwatch.Stop();
+
+            _taskLogger.TryRecordDiagnostic(
+                _currentLogSession,
+                new SekoDiagnosticEvent(
+                    startedAt,
+                    SekoDiagnosticEventKind.Rollback,
+                    "task_rollback",
+                    stopwatch.Elapsed,
+                    null,
+                    "Rollback was not enabled because the task did not start from a clean Git baseline or the workspace is not a Git repository.",
+                    null));
+
             return RollbackResult.None;
         }
 
@@ -177,10 +256,23 @@ public sealed class SekoTransactionalAgent :
 
         if (!hasChanges)
         {
+            stopwatch.Stop();
+
+            _taskLogger.TryRecordDiagnostic(
+                _currentLogSession,
+                new SekoDiagnosticEvent(
+                    startedAt,
+                    SekoDiagnosticEventKind.Rollback,
+                    "task_rollback",
+                    stopwatch.Elapsed,
+                    null,
+                    "No task changes were present, so rollback was not required.",
+                    true));
+
             return RollbackResult.None;
         }
 
-        ActivityChanged?.Invoke(
+        ReportActivity(
             new AgentActivity(
                 AgentActivityKind.Tool,
                 "Rolling back incomplete task changes..."));
@@ -189,16 +281,29 @@ public sealed class SekoTransactionalAgent :
             await transaction.RollbackAsync(
                 CancellationToken.None);
 
+        stopwatch.Stop();
+
+        _taskLogger.TryRecordDiagnostic(
+            _currentLogSession,
+            new SekoDiagnosticEvent(
+                startedAt,
+                SekoDiagnosticEventKind.Rollback,
+                "task_rollback",
+                stopwatch.Elapsed,
+                null,
+                result.Message,
+                result.Succeeded));
+
         if (result.Succeeded)
         {
-            ActivityChanged?.Invoke(
+            ReportActivity(
                 new AgentActivity(
                     AgentActivityKind.Tool,
                     "Rollback complete. Workspace restored."));
         }
         else
         {
-            ActivityChanged?.Invoke(
+            ReportActivity(
                 new AgentActivity(
                     AgentActivityKind.Error,
                     "Rollback needs attention."));

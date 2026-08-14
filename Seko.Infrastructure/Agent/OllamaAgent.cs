@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
@@ -5,12 +6,14 @@ using System.Text.Json.Nodes;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Infrastructure.Agent;
 
 public sealed class OllamaAgent :
     IAgent,
-    IAgentActivitySource
+    IAgentActivitySource,
+    ISekoDiagnosticSource
 {
     private const int MaximumToolRounds = 32;
     private const int MaximumNoProgressRounds = 3;
@@ -41,6 +44,8 @@ public sealed class OllamaAgent :
     private readonly string _model;
 
     public event Action<AgentActivity>? ActivityChanged;
+
+    public event Action<SekoDiagnosticEvent>? DiagnosticEvent;
 
     public OllamaAgent(
         Workspace workspace)
@@ -436,6 +441,17 @@ public sealed class OllamaAgent :
                         AgentActivityKind.Tool,
                         $"Redirecting repeated {toolName} call...");
 
+                    ReportDiagnostic(
+                        new SekoDiagnosticEvent(
+                            DateTimeOffset.Now,
+                            GetDiagnosticKindForTool(
+                                toolName),
+                            toolName,
+                            TimeSpan.Zero,
+                            argumentsJson,
+                            "Repeated semantic tool call blocked. Previous result was reused instead of executing the same call again.",
+                            null));
+
                     messages.Add(
                         new JsonObject
                         {
@@ -473,11 +489,62 @@ public sealed class OllamaAgent :
                         ? CancellationToken.None
                         : cancellationToken;
 
-                var result =
-                    await _toolHost.ExecuteAsync(
+                var toolStartedAt =
+                    DateTimeOffset.Now;
+
+                var toolStopwatch =
+                    Stopwatch.StartNew();
+
+                string result;
+
+                try
+                {
+                    result =
+                        await _toolHost.ExecuteAsync(
+                            toolName,
+                            argumentsJson,
+                            toolCancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    toolStopwatch.Stop();
+
+                    ReportDiagnostic(
+                        new SekoDiagnosticEvent(
+                            toolStartedAt,
+                            GetDiagnosticKindForTool(
+                                toolName),
+                            toolName,
+                            toolStopwatch.Elapsed,
+                            argumentsJson,
+                            "Tool execution was cancelled.",
+                            false));
+
+                    throw;
+                }
+
+                toolStopwatch.Stop();
+
+                var toolSucceeded =
+                    toolName.Equals(
+                        "build_project",
+                        StringComparison.Ordinal)
+                        ? IsSuccessfulBuildResult(
+                            result)
+                        : !result.StartsWith(
+                            "ERROR:",
+                            StringComparison.OrdinalIgnoreCase);
+
+                ReportDiagnostic(
+                    new SekoDiagnosticEvent(
+                        toolStartedAt,
+                        GetDiagnosticKindForTool(
+                            toolName),
                         toolName,
+                        toolStopwatch.Elapsed,
                         argumentsJson,
-                        toolCancellationToken);
+                        result,
+                        toolSucceeded));
 
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -633,10 +700,33 @@ public sealed class OllamaAgent :
             AgentActivityKind.Thinking,
             "Finalizing...");
 
+        var gitStartedAt =
+            DateTimeOffset.Now;
+
+        var gitStopwatch =
+            Stopwatch.StartNew();
+
         var gitResult =
             await _toolHost.TryAutoCommitAsync(
                 userRequest,
                 cancellationToken);
+
+        gitStopwatch.Stop();
+
+        if (!string.IsNullOrWhiteSpace(
+                gitResult))
+        {
+            ReportDiagnostic(
+                new SekoDiagnosticEvent(
+                    gitStartedAt,
+                    SekoDiagnosticEventKind.Git,
+                    "auto_commit",
+                    gitStopwatch.Elapsed,
+                    null,
+                    gitResult,
+                    IsSuccessfulGitResult(
+                        gitResult)));
+        }
 
         if (!string.IsNullOrWhiteSpace(
                 gitResult))
@@ -1715,6 +1805,20 @@ public sealed class OllamaAgent :
         }
 
         if (result.Contains(
+                "BUILD EXIT CODE: 0",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (result.Contains(
+                "BUILD EXIT CODE:",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (result.Contains(
                 "build failed",
                 StringComparison.OrdinalIgnoreCase))
         {
@@ -1729,6 +1833,52 @@ public sealed class OllamaAgent :
         }
 
         return true;
+    }
+
+    private static SekoDiagnosticEventKind GetDiagnosticKindForTool(
+        string toolName)
+    {
+        if (toolName.Equals(
+                "build_project",
+                StringComparison.Ordinal))
+        {
+            return
+                SekoDiagnosticEventKind.Build;
+        }
+
+        if (toolName.Equals(
+                "git_status",
+                StringComparison.Ordinal)
+            || toolName.Equals(
+                "git_diff",
+                StringComparison.Ordinal))
+        {
+            return
+                SekoDiagnosticEventKind.Git;
+        }
+
+        return
+            SekoDiagnosticEventKind.Tool;
+    }
+
+    private static bool IsSuccessfulGitResult(
+        string result)
+    {
+        return
+            result.StartsWith(
+                "Git: committed locally as ",
+                StringComparison.OrdinalIgnoreCase)
+
+            || result.Contains(
+                "no effective changes to commit",
+                StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ReportDiagnostic(
+        SekoDiagnosticEvent diagnosticEvent)
+    {
+        DiagnosticEvent?.Invoke(
+            diagnosticEvent);
     }
 
     private void Report(
