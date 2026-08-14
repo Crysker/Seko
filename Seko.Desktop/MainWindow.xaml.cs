@@ -38,37 +38,35 @@ public partial class MainWindow : Window
 
         foreach (var workspace in state.Workspaces)
         {
-            _workspaces.Add(
-                workspace);
+            _workspaces.Add(workspace);
         }
 
         _activeWorkspace =
             _workspaces.FirstOrDefault(
                 workspace =>
-                    workspace.Id
-                    == state.ActiveWorkspaceId)
+                    workspace.Id == state.ActiveWorkspaceId)
             ?? _workspaces.First();
 
         WorkspaceList.ItemsSource =
             _workspaces;
 
+        ConversationList.ItemsSource =
+            _conversation;
+
         _agent =
             CreateAgentForWorkspace(
                 _activeWorkspace);
 
-        ConversationList.ItemsSource =
-            _conversation;
-
         _conversation.Add(
             new ChatMessage
             {
-                Role =
-                    MessageRole.Assistant,
+                Role = MessageRole.Assistant,
 
                 Content =
-                    $"I'm online locally.\n\n" +
-                    $"Active workspace: {_activeWorkspace.Name}\n\n" +
-                    "No paid AI API is being used."
+                    "I'm online locally.\n\n" +
+                    $"Active workspace: {_activeWorkspace.Name}\n" +
+                    "Model: qwen3:8b via Ollama\n\n" +
+                    "What are we working on?"
             });
 
         UpdateWorkspaceUi();
@@ -121,13 +119,11 @@ public partial class MainWindow : Window
                 Title =
                     "Choose a folder for the new Seko workspace",
 
-                Multiselect =
-                    false
+                Multiselect = false
             };
 
         var result =
-            dialog.ShowDialog(
-                this);
+            dialog.ShowDialog(this);
 
         if (result != true)
         {
@@ -174,14 +170,9 @@ public partial class MainWindow : Window
         var workspace =
             new Workspace
             {
-                Id =
-                    Guid.NewGuid(),
-
-                Name =
-                    workspaceName,
-
-                RootPath =
-                    selectedPath
+                Id = Guid.NewGuid(),
+                Name = workspaceName,
+                RootPath = selectedPath
             };
 
         _workspaces.Add(
@@ -191,17 +182,6 @@ public partial class MainWindow : Window
             workspace);
 
         SaveWorkspaceState();
-
-        _conversation.Add(
-            new ChatMessage
-            {
-                Role =
-                    MessageRole.Assistant,
-
-                Content =
-                    $"Workspace added: {workspace.Name}\n\n" +
-                    workspace.RootPath
-            });
     }
 
     private void WorkspaceButton_Click(
@@ -243,8 +223,7 @@ public partial class MainWindow : Window
         _conversation.Add(
             new ChatMessage
             {
-                Role =
-                    MessageRole.Assistant,
+                Role = MessageRole.Assistant,
 
                 Content =
                     $"Switched to {workspace.Name}.\n\n" +
@@ -254,7 +233,7 @@ public partial class MainWindow : Window
         MessageInput.Focus();
     }
 
-    private IAgent CreateAgentForWorkspace(
+    private static IAgent CreateAgentForWorkspace(
         Workspace workspace)
     {
         return new OllamaAgent(
@@ -292,11 +271,8 @@ public partial class MainWindow : Window
 
         return new WorkspaceState
         {
-            Workspaces =
-                validWorkspaces,
-
-            ActiveWorkspaceId =
-                state.ActiveWorkspaceId
+            Workspaces = validWorkspaces,
+            ActiveWorkspaceId = state.ActiveWorkspaceId
         };
     }
 
@@ -335,8 +311,7 @@ public partial class MainWindow : Window
         var text =
             MessageInput.Text.Trim();
 
-        if (string.IsNullOrWhiteSpace(
-                text))
+        if (string.IsNullOrWhiteSpace(text))
         {
             return;
         }
@@ -351,11 +326,8 @@ public partial class MainWindow : Window
             var userMessage =
                 new ChatMessage
                 {
-                    Role =
-                        MessageRole.User,
-
-                    Content =
-                        text
+                    Role = MessageRole.User,
+                    Content = text
                 };
 
             _conversation.Add(
@@ -375,8 +347,7 @@ public partial class MainWindow : Window
             _conversation.Add(
                 new ChatMessage
                 {
-                    Role =
-                        MessageRole.Assistant,
+                    Role = MessageRole.Assistant,
 
                     Content =
                         "Something went wrong:\n\n" +
@@ -412,14 +383,9 @@ public partial class MainWindow : Window
 
         return new Workspace
         {
-            Id =
-                Guid.NewGuid(),
-
-            Name =
-                "General",
-
-            RootPath =
-                rootPath
+            Id = Guid.NewGuid(),
+            Name = "General",
+            RootPath = rootPath
         };
     }
 }
