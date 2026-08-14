@@ -9,8 +9,14 @@ namespace Seko.Infrastructure.Agent;
 
 public sealed class OllamaAgent : IAgent
 {
-    private const int MaximumToolRounds = 8;
-    private const int MaximumConversationMessages = 10;
+    private const int MaximumToolRounds =
+        12;
+
+    private const int MaximumNoProgressRounds =
+        3;
+
+    private const int MaximumConversationMessages =
+        8;
 
     private static readonly HttpClient HttpClient =
         new()
@@ -69,8 +75,18 @@ public sealed class OllamaAgent : IAgent
         var toolRetryUsed =
             false;
 
-        var anyToolCallExecuted =
+        var anyRealToolExecuted =
             false;
+
+        var modificationGeneration =
+            0;
+
+        var noProgressRounds =
+            0;
+
+        var previousToolCalls =
+            new HashSet<string>(
+                StringComparer.Ordinal);
 
         for (var round = 0;
              round < MaximumToolRounds;
@@ -91,8 +107,9 @@ public sealed class OllamaAgent : IAgent
                     "message",
                     out var messageElement))
             {
-                return CreateAssistantMessage(
-                    "Ollama responded, but the response did not contain a message.");
+                return
+                    CreateAssistantMessage(
+                        "Ollama responded, but the response did not contain a message.");
             }
 
             var content =
@@ -134,7 +151,7 @@ public sealed class OllamaAgent : IAgent
             if (!hasToolCalls)
             {
                 if (workspaceToolsRequired
-                    && !anyToolCallExecuted
+                    && !anyRealToolExecuted
                     && !toolRetryUsed)
                 {
                     toolRetryUsed =
@@ -151,55 +168,28 @@ public sealed class OllamaAgent : IAgent
                                 This request requires workspace access.
 
                                 You have real workspace tools available.
-
                                 Use them now.
 
                                 Do not explain how the task could be done manually.
                                 Do not claim that you cannot access files.
-                                Do not ask me to paste source code unless a tool reports
-                                that the required file does not exist.
 
-                                Start with only the tools actually needed for this task.
+                                Use only the minimum tools needed.
                                 """
                         });
 
                     continue;
                 }
 
-                var gitResult =
-                    await _toolHost.TryAutoCommitAsync(
+                return
+                    await FinishTaskAsync(
+                        content,
                         userRequest,
+                        workspaceToolsRequired,
                         cancellationToken);
-
-                if (!string.IsNullOrWhiteSpace(
-                        gitResult))
-                {
-                    if (!string.IsNullOrWhiteSpace(
-                            content))
-                    {
-                        content +=
-                            "\n\n";
-                    }
-
-                    content +=
-                        gitResult;
-                }
-
-                if (string.IsNullOrWhiteSpace(
-                        content))
-                {
-                    content =
-                        workspaceToolsRequired
-                            ? "I couldn't complete the workspace task with the available tools."
-                            : "Done.";
-                }
-
-                return CreateAssistantMessage(
-                    content.Trim());
             }
 
-            anyToolCallExecuted =
-                true;
+            var roundMadeProgress =
+                false;
 
             foreach (
                 var toolCall
@@ -238,11 +228,54 @@ public sealed class OllamaAgent : IAgent
                             : argumentsElement.GetRawText();
                 }
 
+                var callSignature =
+                    $"{modificationGeneration}|{toolName}|{argumentsJson}";
+
+                if (!previousToolCalls.Add(
+                        callSignature))
+                {
+                    messages.Add(
+                        new JsonObject
+                        {
+                            ["role"] =
+                                "tool",
+
+                            ["tool_name"] =
+                                toolName,
+
+                            ["content"] =
+                                """
+                                SKIPPED DUPLICATE TOOL CALL.
+
+                                You already called this exact tool with these exact
+                                arguments and the workspace has not changed since then.
+
+                                Use the previous result.
+                                Do not repeat the call.
+                                Continue to the next necessary step or finish the task.
+                                """
+                        });
+
+                    continue;
+                }
+
                 var result =
                     await _toolHost.ExecuteAsync(
                         toolName,
                         argumentsJson,
                         cancellationToken);
+
+                anyRealToolExecuted =
+                    true;
+
+                roundMadeProgress =
+                    true;
+
+                if (IsSuccessfulModification(
+                        result))
+                {
+                    modificationGeneration++;
+                }
 
                 messages.Add(
                     new JsonObject
@@ -257,11 +290,123 @@ public sealed class OllamaAgent : IAgent
                             result
                     });
             }
+
+            if (roundMadeProgress)
+            {
+                noProgressRounds =
+                    0;
+            }
+            else
+            {
+                noProgressRounds++;
+            }
+
+            if (noProgressRounds == 2)
+            {
+                messages.Add(
+                    new JsonObject
+                    {
+                        ["role"] =
+                            "user",
+
+                        ["content"] =
+                            """
+                            You are repeating tool calls without making progress.
+
+                            Review the tool results already present in the conversation.
+
+                            Do not repeat completed inspections.
+
+                            If the requested modification is complete:
+                            - build once if required
+                            - then stop calling tools
+                            - provide the final response
+
+                            If something failed, take one concrete corrective action.
+                            """
+                    });
+            }
+
+            if (noProgressRounds >= MaximumNoProgressRounds)
+            {
+                return
+                    await FinishSafetyStopAsync(
+                        userRequest,
+                        cancellationToken);
+            }
         }
 
-        return CreateAssistantMessage(
-            "I stopped because I reached the tool-call safety limit. " +
-            "I may be going in circles, so I need your input.");
+        return
+            await FinishSafetyStopAsync(
+                userRequest,
+                cancellationToken);
+    }
+
+    private async Task<ChatMessage> FinishTaskAsync(
+        string content,
+        string userRequest,
+        bool workspaceToolsRequired,
+        CancellationToken cancellationToken)
+    {
+        var gitResult =
+            await _toolHost.TryAutoCommitAsync(
+                userRequest,
+                cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(
+                gitResult))
+        {
+            if (!string.IsNullOrWhiteSpace(
+                    content))
+            {
+                content +=
+                    "\n\n";
+            }
+
+            content +=
+                gitResult;
+        }
+
+        if (string.IsNullOrWhiteSpace(
+                content))
+        {
+            content =
+                workspaceToolsRequired
+                    ? "The workspace task is complete."
+                    : "Done.";
+        }
+
+        return
+            CreateAssistantMessage(
+                content.Trim());
+    }
+
+    private async Task<ChatMessage> FinishSafetyStopAsync(
+        string userRequest,
+        CancellationToken cancellationToken)
+    {
+        var gitResult =
+            await _toolHost.TryAutoCommitAsync(
+                userRequest,
+                cancellationToken);
+
+        var content =
+            "I stopped because I detected repeated tool calls without meaningful progress.";
+
+        if (!string.IsNullOrWhiteSpace(
+                gitResult))
+        {
+            content +=
+                "\n\n" +
+                gitResult;
+        }
+
+        content +=
+            "\n\nI did not continue looping automatically.";
+
+        return
+            CreateAssistantMessage(
+                content);
     }
 
     private async Task<JsonDocument> SendChatRequestAsync(
@@ -285,22 +430,14 @@ public sealed class OllamaAgent : IAgent
                     false,
 
                 /*
-                    Qwen3 thinking mode is deliberately disabled here.
+                    Fast mode for routine agent work.
 
-                    For normal Seko interaction and tool use, direct tool calling
-                    is much faster on our local hardware.
-
-                    We can later add a separate "Deep Think" mode for difficult
-                    architecture/research problems instead of paying this latency
-                    on every workspace request.
+                    We can later expose a separate Deep Think mode instead of
+                    paying reasoning latency on every workspace operation.
                 */
                 ["think"] =
                     false,
 
-                /*
-                    Keep the model loaded between requests so subsequent messages
-                    do not repeatedly pay the model-load startup cost.
-                */
                 ["keep_alive"] =
                     "30m",
 
@@ -309,22 +446,14 @@ public sealed class OllamaAgent : IAgent
                     {
                         ["temperature"] =
                             workspaceToolsRequired
-                                ? 0.1
+                                ? 0.05
                                 : 0.35,
 
-                        /*
-                            Large enough for our current source-code work without
-                            running the full 8K context for every small request.
-                        */
                         ["num_ctx"] =
-                            6144,
+                            8192,
 
-                        /*
-                            Prevent unnecessarily long conversational responses.
-                            Tool calls themselves are unaffected.
-                        */
                         ["num_predict"] =
-                            1024
+                            2048
                     }
             };
 
@@ -359,8 +488,9 @@ public sealed class OllamaAgent : IAgent
                     responseText);
             }
 
-            return JsonDocument.Parse(
-                responseText);
+            return
+                JsonDocument.Parse(
+                    responseText);
         }
     }
 
@@ -418,14 +548,45 @@ public sealed class OllamaAgent : IAgent
 
             Be calm, capable, concise and slightly playful.
 
-            You have real workspace tools for:
-            - listing files
-            - reading files
-            - writing files
-            - replacing text
-            - building .NET projects
-            - checking Git status
-            - viewing Git diffs
+            REAL WORKSPACE TOOLS
+            You have:
+            - find_files
+            - find_text
+            - list_files
+            - read_file
+            - write_file
+            - replace_text
+            - build_project
+            - git_status
+            - git_diff
+
+            FAST TOOL STRATEGY
+            Use as few tool calls as necessary.
+
+            If you know a filename but not its path:
+            use find_files.
+
+            If you need one section of a known file:
+            use find_text.
+
+            Do NOT read an entire large file merely to locate one small piece
+            of text.
+
+            Use list_files only when you genuinely need a directory overview.
+
+            For a small targeted edit, the preferred flow is:
+
+            git_status
+            -> find_files if necessary
+            -> find_text
+            -> replace_text
+            -> build_project
+            -> final response
+
+            Do not call the same tool with the same arguments repeatedly.
+
+            After a successful build, stop calling tools unless another action
+            is genuinely necessary.
 
             TOOL RULE
             If the user explicitly asks you to inspect, edit, implement, fix,
@@ -433,30 +594,54 @@ public sealed class OllamaAgent : IAgent
             the active workspace, use tools instead of explaining how to do it.
 
             Never say you cannot access workspace files while these tools exist.
-            Never invent file contents or claim an action succeeded unless its
-            tool succeeded.
+
+            Never invent file contents.
+
+            Never claim an inspection, modification or build succeeded unless
+            its tool actually succeeded.
 
             SELF-DEVELOPMENT
             If this workspace is Seko's own repository, you may edit your own
             source when explicitly asked.
 
-            Before modifying code:
-            1. Check Git status.
-            2. Inspect only the relevant files.
-            3. Make the smallest sensible change.
-            4. Build after C#, XAML or project-file changes.
-            5. Repair build errors you introduced.
-            6. Do not endlessly retry.
+            A discussion about a possible feature is not permission to edit.
 
-            The host automatically blocks modifications when unrelated
-            uncommitted changes existed before the task and may create a local
-            Git commit after a successful change.
+            CODE CHANGE PROCESS
+            Before changing code:
+            1. Check Git status.
+            2. Inspect only the relevant source.
+            3. Make the smallest sensible change.
+            4. Prefer replace_text for focused edits.
+            5. Build after C#, XAML or project-file changes.
+            6. If the build fails, use the compiler output to repair the error.
+            7. Rebuild after a repair.
+            8. Once the build succeeds, stop and summarize.
+            9. Do not repeatedly inspect files that have already given you the
+               information required.
+
+            GIT SAFETY
+            The host records whether Git was clean before the task began.
+
+            If unrelated uncommitted changes existed before the task,
+            modifications are blocked.
+
+            Files you modify through your tools are tracked.
+
+            After successful code changes and a successful build, the host may
+            create a LOCAL Git commit containing only those changed files.
 
             Never push to GitHub automatically.
 
             SECURITY
             Stay inside the active workspace.
-            Never seek passwords, API keys, credentials or private keys.
+
+            Never seek:
+            - passwords
+            - API keys
+            - credentials
+            - private keys
+            - secret files
+
             Never bypass safeguards or silently expand your own permissions.
             """;
     }
@@ -523,6 +708,19 @@ public sealed class OllamaAgent : IAgent
                 normalized.Contains);
     }
 
+    private static bool IsSuccessfulModification(
+        string toolResult)
+    {
+        return
+            toolResult.StartsWith(
+                "Updated ",
+                StringComparison.Ordinal)
+
+            || toolResult.StartsWith(
+                "Wrote ",
+                StringComparison.Ordinal);
+    }
+
     private static string GetOptionalString(
         JsonElement element,
         string propertyName)
@@ -532,23 +730,26 @@ public sealed class OllamaAgent : IAgent
                 out var property)
             || property.ValueKind != JsonValueKind.String)
         {
-            return string.Empty;
+            return
+                string.Empty;
         }
 
-        return property.GetString()
-               ?? string.Empty;
+        return
+            property.GetString()
+            ?? string.Empty;
     }
 
     private static ChatMessage CreateAssistantMessage(
         string content)
     {
-        return new ChatMessage
-        {
-            Role =
-                MessageRole.Assistant,
+        return
+            new ChatMessage
+            {
+                Role =
+                    MessageRole.Assistant,
 
-            Content =
-                content
-        };
+                Content =
+                    content
+            };
     }
 }

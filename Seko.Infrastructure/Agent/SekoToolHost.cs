@@ -54,7 +54,8 @@ public sealed class SekoToolHost
     public SekoToolHost(
         Workspace workspace)
     {
-        _workspace = workspace;
+        _workspace =
+            workspace;
 
         _workspaceRoot =
             Path.GetFullPath(
@@ -66,8 +67,11 @@ public sealed class SekoToolHost
     {
         _changedFiles.Clear();
 
-        _buildWasRun = false;
-        _lastBuildSucceeded = false;
+        _buildWasRun =
+            false;
+
+        _lastBuildSucceeded =
+            false;
 
         var gitCheck =
             await RunProcessAsync(
@@ -88,7 +92,9 @@ public sealed class SekoToolHost
 
         if (!_isGitRepository)
         {
-            _baselineClean = true;
+            _baselineClean =
+                true;
+
             return;
         }
 
@@ -114,11 +120,79 @@ public sealed class SekoToolHost
         return new JsonArray
         {
             CreateFunctionTool(
-                "list_files",
-                "List files and directories inside the active workspace.",
+                "find_files",
+                "Find files by file name inside the active workspace. Prefer this when you know a file name but not its relative path.",
                 new JsonObject
                 {
-                    ["type"] = "object",
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["name"] =
+                                StringProperty(
+                                    "File name or part of a file name to find, for example MainWindow.xaml.")
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "name"
+                        }
+                }),
+
+            CreateFunctionTool(
+                "find_text",
+                "Find text inside one known file and return only the matching lines plus nearby context. Prefer this over read_file for focused edits.",
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["path"] =
+                                StringProperty(
+                                    "File path relative to the workspace root."),
+
+                            ["text"] =
+                                StringProperty(
+                                    "Text to search for inside the file."),
+
+                            ["context_lines"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Number of surrounding lines to return. Usually 3 to 6.",
+
+                                    ["minimum"] =
+                                        0,
+
+                                    ["maximum"] =
+                                        10
+                                }
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "path",
+                            "text"
+                        }
+                }),
+
+            CreateFunctionTool(
+                "list_files",
+                "List files and directories inside a specific workspace directory. Use this for directory overviews, not for locating one known filename.",
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
 
                     ["properties"] =
                         new JsonObject
@@ -130,7 +204,9 @@ public sealed class SekoToolHost
                             ["recursive"] =
                                 new JsonObject
                                 {
-                                    ["type"] = "boolean",
+                                    ["type"] =
+                                        "boolean",
+
                                     ["description"] =
                                         "Whether child directories should be listed recursively."
                                 }
@@ -146,10 +222,11 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "read_file",
-                "Read a text or source-code file inside the active workspace.",
+                "Read an entire text or source-code file. Use find_text instead when only a small relevant section is needed.",
                 new JsonObject
                 {
-                    ["type"] = "object",
+                    ["type"] =
+                        "object",
 
                     ["properties"] =
                         new JsonObject
@@ -168,10 +245,11 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "write_file",
-                "Create a new source/text file or completely replace an existing file.",
+                "Create a new source/text file or deliberately replace an entire existing file.",
                 new JsonObject
                 {
-                    ["type"] = "object",
+                    ["type"] =
+                        "object",
 
                     ["properties"] =
                         new JsonObject
@@ -195,10 +273,11 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "replace_text",
-                "Replace exactly one matching section of an existing source file. Prefer this for focused edits.",
+                "Replace exactly one matching section in an existing source file. Prefer this for focused edits.",
                 new JsonObject
                 {
-                    ["type"] = "object",
+                    ["type"] =
+                        "object",
 
                     ["properties"] =
                         new JsonObject
@@ -209,7 +288,7 @@ public sealed class SekoToolHost
 
                             ["old_text"] =
                                 StringProperty(
-                                    "Exact existing text to replace. It must appear exactly once."),
+                                    "Exact existing text to replace. It must occur exactly once."),
 
                             ["new_text"] =
                                 StringProperty(
@@ -251,7 +330,8 @@ public sealed class SekoToolHost
         {
             using var document =
                 JsonDocument.Parse(
-                    string.IsNullOrWhiteSpace(argumentsJson)
+                    string.IsNullOrWhiteSpace(
+                        argumentsJson)
                         ? "{}"
                         : argumentsJson);
 
@@ -260,8 +340,18 @@ public sealed class SekoToolHost
 
             return toolName switch
             {
+                "find_files" =>
+                    FindFiles(
+                        arguments),
+
+                "find_text" =>
+                    await FindTextAsync(
+                        arguments,
+                        cancellationToken),
+
                 "list_files" =>
-                    ListFiles(arguments),
+                    ListFiles(
+                        arguments),
 
                 "read_file" =>
                     await ReadFileAsync(
@@ -426,7 +516,258 @@ public sealed class SekoToolHost
                 cancellationToken);
 
         return
-            $"Git: committed locally as {hashResult.Output.Trim()} — {commitMessage}";
+            $"Git: committed locally as " +
+            $"{hashResult.Output.Trim()} — " +
+            commitMessage;
+    }
+
+    private string FindFiles(
+        JsonElement arguments)
+    {
+        var query =
+            GetString(
+                arguments,
+                "name")
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                query))
+        {
+            return
+                "ERROR: File name cannot be empty.";
+        }
+
+        const int maximumResults =
+            50;
+
+        var results =
+            new List<string>();
+
+        var queue =
+            new Queue<string>();
+
+        queue.Enqueue(
+            _workspaceRoot);
+
+        while (queue.Count > 0
+               && results.Count < maximumResults)
+        {
+            var current =
+                queue.Dequeue();
+
+            foreach (
+                var directory
+                in GetDirectoriesSafe(current)
+                    .OrderBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
+            {
+                var directoryName =
+                    Path.GetFileName(
+                        directory);
+
+                if (IgnoredDirectories.Contains(
+                        directoryName))
+                {
+                    continue;
+                }
+
+                queue.Enqueue(
+                    directory);
+            }
+
+            foreach (
+                var file
+                in GetFilesSafe(current)
+                    .OrderBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
+            {
+                if (IsSensitiveFile(
+                        file))
+                {
+                    continue;
+                }
+
+                var fileName =
+                    Path.GetFileName(
+                        file);
+
+                if (!fileName.Contains(
+                        query,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                results.Add(
+                    ToRelativePath(
+                        file));
+
+                if (results.Count >= maximumResults)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (results.Count == 0)
+        {
+            return
+                $"No accessible files matching '{query}' were found.";
+        }
+
+        return
+            string.Join(
+                Environment.NewLine,
+                results);
+    }
+
+    private async Task<string> FindTextAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var relativePath =
+            GetString(
+                arguments,
+                "path");
+
+        var searchText =
+            GetString(
+                arguments,
+                "text");
+
+        if (string.IsNullOrEmpty(
+                searchText))
+        {
+            return
+                "ERROR: Search text cannot be empty.";
+        }
+
+        var contextLines =
+            GetOptionalInteger(
+                arguments,
+                "context_lines",
+                4);
+
+        contextLines =
+            Math.Clamp(
+                contextLines,
+                0,
+                10);
+
+        var fullPath =
+            ResolveSafePath(
+                relativePath);
+
+        EnsureAllowedFile(
+            fullPath);
+
+        if (!File.Exists(
+                fullPath))
+        {
+            return
+                $"ERROR: File not found: {relativePath}";
+        }
+
+        var fileInfo =
+            new FileInfo(
+                fullPath);
+
+        if (fileInfo.Length > 600_000)
+        {
+            return
+                "ERROR: File is too large for the current text search tool.";
+        }
+
+        var lines =
+            await File.ReadAllLinesAsync(
+                fullPath,
+                cancellationToken);
+
+        var matchingLines =
+            new List<int>();
+
+        for (var index = 0;
+             index < lines.Length;
+             index++)
+        {
+            if (lines[index].Contains(
+                    searchText,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                matchingLines.Add(
+                    index);
+
+                if (matchingLines.Count >= 12)
+                {
+                    break;
+                }
+            }
+        }
+
+        if (matchingLines.Count == 0)
+        {
+            return
+                $"Text '{searchText}' was not found in {NormalizeRelativePath(relativePath)}.";
+        }
+
+        var builder =
+            new StringBuilder();
+
+        builder.AppendLine(
+            $"FILE: {NormalizeRelativePath(relativePath)}");
+
+        builder.AppendLine(
+            $"SEARCH: {searchText}");
+
+        builder.AppendLine();
+
+        foreach (var matchIndex in matchingLines)
+        {
+            var start =
+                Math.Max(
+                    0,
+                    matchIndex - contextLines);
+
+            var end =
+                Math.Min(
+                    lines.Length - 1,
+                    matchIndex + contextLines);
+
+            builder.AppendLine(
+                $"--- Match at line {matchIndex + 1} ---");
+
+            for (var index = start;
+                 index <= end;
+                 index++)
+            {
+                var marker =
+                    index == matchIndex
+                        ? ">"
+                        : " ";
+
+                builder.Append(
+                    marker);
+
+                builder.Append(
+                    (index + 1)
+                    .ToString()
+                    .PadLeft(5));
+
+                builder.Append(
+                    " | ");
+
+                builder.AppendLine(
+                    lines[index]);
+            }
+
+            builder.AppendLine();
+        }
+
+        return builder
+            .ToString()
+            .TrimEnd();
     }
 
     private string ListFiles(
@@ -453,52 +794,71 @@ public sealed class SekoToolHost
                 $"ERROR: Directory not found: {relativePath}";
         }
 
-        const int maximumEntries = 300;
+        const int maximumEntries =
+            300;
 
         var results =
             new List<string>();
 
-        var searchOption =
-            recursive
-                ? SearchOption.AllDirectories
-                : SearchOption.TopDirectoryOnly;
+        var queue =
+            new Queue<string>();
 
-        foreach (
-            var childDirectory
-            in Directory.EnumerateDirectories(
-                directory,
-                "*",
-                searchOption))
+        queue.Enqueue(
+            directory);
+
+        while (queue.Count > 0
+               && results.Count < maximumEntries)
         {
-            if (PathContainsIgnoredDirectory(
-                    childDirectory))
-            {
-                continue;
-            }
+            var current =
+                queue.Dequeue();
 
-            results.Add(
-                "[DIR] " +
-                ToRelativePath(
-                    childDirectory));
+            foreach (
+                var childDirectory
+                in GetDirectoriesSafe(current)
+                    .OrderBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
+            {
+                var directoryName =
+                    Path.GetFileName(
+                        childDirectory);
+
+                if (IgnoredDirectories.Contains(
+                        directoryName))
+                {
+                    continue;
+                }
+
+                results.Add(
+                    "[DIR] " +
+                    ToRelativePath(
+                        childDirectory));
+
+                if (recursive)
+                {
+                    queue.Enqueue(
+                        childDirectory);
+                }
+
+                if (results.Count >= maximumEntries)
+                {
+                    break;
+                }
+            }
 
             if (results.Count >= maximumEntries)
             {
                 break;
             }
-        }
 
-        if (results.Count < maximumEntries)
-        {
             foreach (
                 var file
-                in Directory.EnumerateFiles(
-                    directory,
-                    "*",
-                    searchOption))
+                in GetFilesSafe(current)
+                    .OrderBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
             {
-                if (PathContainsIgnoredDirectory(
-                        file)
-                    || IsSensitiveFile(
+                if (IsSensitiveFile(
                         file))
                 {
                     continue;
@@ -514,6 +874,11 @@ public sealed class SekoToolHost
                     break;
                 }
             }
+
+            if (!recursive)
+            {
+                break;
+            }
         }
 
         if (results.Count == 0)
@@ -522,9 +887,10 @@ public sealed class SekoToolHost
                 "No accessible files found.";
         }
 
-        return string.Join(
-            Environment.NewLine,
-            results);
+        return
+            string.Join(
+                Environment.NewLine,
+                results);
     }
 
     private async Task<string> ReadFileAsync(
@@ -684,7 +1050,7 @@ public sealed class SekoToolHost
         if (occurrences == 0)
         {
             return
-                "ERROR: old_text was not found. Read the current file before editing.";
+                "ERROR: old_text was not found. Use find_text or read_file before editing.";
         }
 
         if (occurrences > 1)
@@ -721,8 +1087,11 @@ public sealed class SekoToolHost
     private async Task<string> BuildProjectAsync(
         CancellationToken cancellationToken)
     {
-        _buildWasRun = true;
-        _lastBuildSucceeded = false;
+        _buildWasRun =
+            true;
+
+        _lastBuildSucceeded =
+            false;
 
         var target =
             FindBuildTarget();
@@ -830,9 +1199,10 @@ public sealed class SekoToolHost
                 "No unstaged Git diff.";
         }
 
-        return TrimOutput(
-            result.Output,
-            30_000);
+        return
+            TrimOutput(
+                result.Output,
+                30_000);
     }
 
     private void EnsureModificationAllowed()
@@ -891,7 +1261,9 @@ public sealed class SekoToolHost
         }
 
         if (PathContainsIgnoredDirectory(
-                fullPath))
+                Path.GetRelativePath(
+                    root,
+                    fullPath)))
         {
             throw new UnauthorizedAccessException(
                 "Access to Git internals, build output and generated directories is blocked.");
@@ -1005,16 +1377,19 @@ public sealed class SekoToolHost
             .FirstOrDefault(
                 path =>
                     !PathContainsIgnoredDirectory(
-                        path));
+                        Path.GetRelativePath(
+                            _workspaceRoot,
+                            path)));
     }
 
     private string ToRelativePath(
         string fullPath)
     {
-        return NormalizeRelativePath(
-            Path.GetRelativePath(
-                _workspaceRoot,
-                fullPath));
+        return
+            NormalizeRelativePath(
+                Path.GetRelativePath(
+                    _workspaceRoot,
+                    fullPath));
     }
 
     private static bool PathContainsIgnoredDirectory(
@@ -1029,18 +1404,20 @@ public sealed class SekoToolHost
                 },
                 StringSplitOptions.RemoveEmptyEntries);
 
-        return parts.Any(
-            part =>
-                IgnoredDirectories.Contains(
-                    part));
+        return
+            parts.Any(
+                part =>
+                    IgnoredDirectories.Contains(
+                        part));
     }
 
     private static string NormalizeRelativePath(
         string path)
     {
-        return path.Replace(
-            '\\',
-            '/');
+        return
+            path.Replace(
+                '\\',
+                '/');
     }
 
     private static string GetString(
@@ -1056,8 +1433,9 @@ public sealed class SekoToolHost
                 $"Missing string argument '{propertyName}'.");
         }
 
-        return element.GetString()
-               ?? string.Empty;
+        return
+            element.GetString()
+            ?? string.Empty;
     }
 
     private static bool GetBoolean(
@@ -1086,12 +1464,37 @@ public sealed class SekoToolHost
             $"Argument '{propertyName}' must be true or false.");
     }
 
+    private static int GetOptionalInteger(
+        JsonElement arguments,
+        string propertyName,
+        int defaultValue)
+    {
+        if (!arguments.TryGetProperty(
+                propertyName,
+                out var element))
+        {
+            return defaultValue;
+        }
+
+        if (element.ValueKind == JsonValueKind.Number
+            && element.TryGetInt32(
+                out var value))
+        {
+            return value;
+        }
+
+        return defaultValue;
+    }
+
     private static int CountOccurrences(
         string text,
         string value)
     {
-        var count = 0;
-        var index = 0;
+        var count =
+            0;
+
+        var index =
+            0;
 
         while (true)
         {
@@ -1107,7 +1510,9 @@ public sealed class SekoToolHost
             }
 
             count++;
-            index += value.Length;
+
+            index +=
+                value.Length;
         }
     }
 
@@ -1176,24 +1581,66 @@ public sealed class SekoToolHost
             $"Seko: {firstLine}";
     }
 
+    private static IEnumerable<string> GetDirectoriesSafe(
+        string path)
+    {
+        try
+        {
+            return
+                Directory.GetDirectories(
+                    path);
+        }
+        catch
+        {
+            return
+                Array.Empty<string>();
+        }
+    }
+
+    private static IEnumerable<string> GetFilesSafe(
+        string path)
+    {
+        try
+        {
+            return
+                Directory.GetFiles(
+                    path);
+        }
+        catch
+        {
+            return
+                Array.Empty<string>();
+        }
+    }
+
     private static JsonObject StringProperty(
         string description)
     {
-        return new JsonObject
-        {
-            ["type"] = "string",
-            ["description"] = description
-        };
+        return
+            new JsonObject
+            {
+                ["type"] =
+                    "string",
+
+                ["description"] =
+                    description
+            };
     }
 
     private static JsonObject EmptyParameters()
     {
-        return new JsonObject
-        {
-            ["type"] = "object",
-            ["properties"] = new JsonObject(),
-            ["required"] = new JsonArray()
-        };
+        return
+            new JsonObject
+            {
+                ["type"] =
+                    "object",
+
+                ["properties"] =
+                    new JsonObject(),
+
+                ["required"] =
+                    new JsonArray()
+            };
     }
 
     private static JsonObject CreateFunctionTool(
@@ -1201,18 +1648,25 @@ public sealed class SekoToolHost
         string description,
         JsonObject parameters)
     {
-        return new JsonObject
-        {
-            ["type"] = "function",
+        return
+            new JsonObject
+            {
+                ["type"] =
+                    "function",
 
-            ["function"] =
-                new JsonObject
-                {
-                    ["name"] = name,
-                    ["description"] = description,
-                    ["parameters"] = parameters
-                }
-        };
+                ["function"] =
+                    new JsonObject
+                    {
+                        ["name"] =
+                            name,
+
+                        ["description"] =
+                            description,
+
+                        ["parameters"] =
+                            parameters
+                    }
+            };
     }
 
     private static async Task<ProcessResult> RunProcessAsync(
@@ -1225,12 +1679,23 @@ public sealed class SekoToolHost
         var startInfo =
             new ProcessStartInfo
             {
-                FileName = executable,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
+                FileName =
+                    executable,
+
+                WorkingDirectory =
+                    workingDirectory,
+
+                RedirectStandardOutput =
+                    true,
+
+                RedirectStandardError =
+                    true,
+
+                UseShellExecute =
+                    false,
+
+                CreateNoWindow =
+                    true
             };
 
         foreach (var argument in arguments)
@@ -1244,7 +1709,8 @@ public sealed class SekoToolHost
             using var process =
                 new Process
                 {
-                    StartInfo = startInfo
+                    StartInfo =
+                        startInfo
                 };
 
             process.Start();
@@ -1282,9 +1748,10 @@ public sealed class SekoToolHost
                     // Best effort.
                 }
 
-                return new ProcessResult(
-                    -1,
-                    "Process timed out.");
+                return
+                    new ProcessResult(
+                        -1,
+                        "Process timed out.");
             }
 
             var output =
@@ -1304,15 +1771,17 @@ public sealed class SekoToolHost
                     error;
             }
 
-            return new ProcessResult(
-                process.ExitCode,
-                combined.Trim());
+            return
+                new ProcessResult(
+                    process.ExitCode,
+                    combined.Trim());
         }
         catch (Exception exception)
         {
-            return new ProcessResult(
-                -1,
-                exception.Message);
+            return
+                new ProcessResult(
+                    -1,
+                    exception.Message);
         }
     }
 
