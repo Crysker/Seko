@@ -9,7 +9,6 @@ using Microsoft.Win32;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
-using Seko.Desktop.Services;
 using Seko.Infrastructure.Agent;
 using Seko.Infrastructure.Workspaces;
 
@@ -23,13 +22,17 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<Workspace> _workspaces =
         new();
 
+    private readonly ObservableCollection<string> _activityEntries =
+        new();
+
     private readonly IWorkspaceStore _workspaceStore;
 
-    private IAgent _agent;
+    private IAgent _agent = null!;
     private Workspace _activeWorkspace;
 
+    private CancellationTokenSource? _requestCancellationSource;
+
     private bool _isSending;
-    private bool _restartScheduled;
 
     public MainWindow()
     {
@@ -52,7 +55,8 @@ public partial class MainWindow : Window
         _activeWorkspace =
             _workspaces.FirstOrDefault(
                 workspace =>
-                    workspace.Id == state.ActiveWorkspaceId)
+                    workspace.Id
+                    == state.ActiveWorkspaceId)
             ?? _workspaces.First();
 
         WorkspaceList.ItemsSource =
@@ -60,6 +64,9 @@ public partial class MainWindow : Window
 
         ConversationList.ItemsSource =
             _conversation;
+
+        AgentActivityList.ItemsSource =
+            _activityEntries;
 
         _agent =
             CreateAgentForWorkspace(
@@ -79,16 +86,17 @@ public partial class MainWindow : Window
             });
 
         UpdateWorkspaceUi();
+        SetAgentStateReady();
 
         Loaded += (_, _) =>
         {
             MessageInput.Focus();
-
             ScrollConversationToBottom();
         };
 
         Closing += (_, _) =>
         {
+            _requestCancellationSource?.Cancel();
             SaveWorkspaceState();
         };
     }
@@ -115,16 +123,51 @@ public partial class MainWindow : Window
             return;
         }
 
-        e.Handled =
-            true;
+        e.Handled = true;
 
         await SendCurrentMessageAsync();
+    }
+
+    private void StopAgentButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_requestCancellationSource is null
+            || _requestCancellationSource.IsCancellationRequested)
+        {
+            return;
+        }
+
+        StopAgentButton.IsEnabled =
+            false;
+
+        StopAgentButton.Content =
+            "Stopping…";
+
+        ActivityHeaderText.Text =
+            "Stopping";
+
+        AgentStateText.Text =
+            "Stopping";
+
+        AddActivityLine(
+            "Stopping current task…");
+
+        _requestCancellationSource.Cancel();
     }
 
     private void NewWorkspaceButton_Click(
         object sender,
         RoutedEventArgs e)
     {
+        if (_isSending)
+        {
+            AddActivityLine(
+                "Stop the current task before switching workspaces.");
+
+            return;
+        }
+
         var dialog =
             new OpenFolderDialog
             {
@@ -207,6 +250,14 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
+        if (_isSending)
+        {
+            AddActivityLine(
+                "Stop the current task before switching workspaces.");
+
+            return;
+        }
+
         if (sender
             is not Button button)
         {
@@ -226,6 +277,9 @@ public partial class MainWindow : Window
     private void ActivateWorkspace(
         Workspace workspace)
     {
+        DetachAgentEvents(
+            _agent);
+
         _activeWorkspace =
             workspace;
 
@@ -238,6 +292,10 @@ public partial class MainWindow : Window
         SaveWorkspaceState();
 
         _conversation.Clear();
+        _activityEntries.Clear();
+
+        ActivityPanel.Visibility =
+            Visibility.Collapsed;
 
         AddConversationMessage(
             new ChatMessage
@@ -253,12 +311,66 @@ public partial class MainWindow : Window
         MessageInput.Focus();
     }
 
-    private static IAgent CreateAgentForWorkspace(
+    private IAgent CreateAgentForWorkspace(
         Workspace workspace)
     {
-        return
+        var agent =
             new OllamaAgent(
                 workspace);
+
+        if (agent
+            is IAgentActivitySource activitySource)
+        {
+            activitySource.ActivityChanged +=
+                Agent_ActivityChanged;
+        }
+
+        return agent;
+    }
+
+    private void DetachAgentEvents(
+        IAgent? agent)
+    {
+        if (agent
+            is IAgentActivitySource activitySource)
+        {
+            activitySource.ActivityChanged -=
+                Agent_ActivityChanged;
+        }
+    }
+
+    private void Agent_ActivityChanged(
+        AgentActivity activity)
+    {
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Background,
+            new Action(
+                () =>
+                {
+                    ActivityPanel.Visibility =
+                        Visibility.Visible;
+
+                    AddActivityLine(
+                        activity.Message);
+
+                    switch (activity.Kind)
+                    {
+                        case AgentActivityKind.Completed:
+                            ActivityHeaderText.Text =
+                                "Task complete";
+                            break;
+
+                        case AgentActivityKind.Error:
+                            ActivityHeaderText.Text =
+                                "Needs attention";
+                            break;
+
+                        default:
+                            ActivityHeaderText.Text =
+                                "Working";
+                            break;
+                    }
+                }));
     }
 
     private WorkspaceState LoadWorkspaceState()
@@ -328,8 +440,7 @@ public partial class MainWindow : Window
 
     private async Task SendCurrentMessageAsync()
     {
-        if (_isSending
-            || _restartScheduled)
+        if (_isSending)
         {
             return;
         }
@@ -343,8 +454,15 @@ public partial class MainWindow : Window
             return;
         }
 
-        _isSending =
-            true;
+        _isSending = true;
+
+        var cancellationSource =
+            new CancellationTokenSource();
+
+        _requestCancellationSource =
+            cancellationSource;
+
+        BeginAgentRun();
 
         MessageInput.IsEnabled =
             false;
@@ -366,22 +484,43 @@ public partial class MainWindow : Window
 
             MessageInput.Clear();
 
+            var activeAgent =
+                _agent;
+
             var response =
-                await _agent.SendAsync(
-                    _conversation.ToList());
+                await activeAgent.SendAsync(
+                    _conversation.ToList(),
+                    cancellationSource.Token);
 
             AddConversationMessage(
                 response);
+        }
+        catch (OperationCanceledException)
+        {
+            AddActivityLine(
+                "Task stopped by you.");
 
-            if (_agent
-                is IRestartAwareAgent restartAwareAgent
-                && restartAwareAgent.RestartRequested)
-            {
-                await RestartAfterSelfUpdateAsync();
-            }
+            ActivityHeaderText.Text =
+                "Stopped";
+
+            AddConversationMessage(
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.Assistant,
+
+                    Content =
+                        "Stopped."
+                });
         }
         catch (Exception exception)
         {
+            AddActivityLine(
+                "Task failed.");
+
+            ActivityHeaderText.Text =
+                "Needs attention";
+
             AddConversationMessage(
                 new ChatMessage
                 {
@@ -395,76 +534,107 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _isSending =
-                false;
-
-            if (!_restartScheduled)
+            if (ReferenceEquals(
+                    _requestCancellationSource,
+                    cancellationSource))
             {
-                MessageInput.IsEnabled =
-                    true;
-
-                MessageInput.Focus();
+                _requestCancellationSource =
+                    null;
             }
 
-            ScrollConversationToBottom();
-        }
-    }
+            cancellationSource.Dispose();
 
-    private async Task RestartAfterSelfUpdateAsync()
-    {
-        if (_restartScheduled)
-        {
-            return;
-        }
-
-        _restartScheduled =
-            true;
-
-        MessageInput.IsEnabled =
-            false;
-
-        var scheduled =
-            SekoRestartService.TryScheduleRestart(
-                _activeWorkspace.RootPath,
-                Environment.ProcessId,
-                out var error);
-
-        if (!scheduled)
-        {
-            _restartScheduled =
+            _isSending =
                 false;
 
             MessageInput.IsEnabled =
                 true;
 
-            AddConversationMessage(
-                new ChatMessage
-                {
-                    Role =
-                        MessageRole.Assistant,
+            StopAgentButton.IsEnabled =
+                true;
 
-                    Content =
-                        "The update is committed, but I couldn't schedule my restart.\n\n" +
-                        error
-                });
+            StopAgentButton.Content =
+                "Stop";
 
+            StopAgentButton.Visibility =
+                Visibility.Collapsed;
+
+            SetAgentStateReady();
+
+            MessageInput.Focus();
+
+            ScrollConversationToBottom();
+        }
+    }
+
+    private void BeginAgentRun()
+    {
+        _activityEntries.Clear();
+
+        ActivityPanel.Visibility =
+            Visibility.Visible;
+
+        ActivityHeaderText.Text =
+            "Working";
+
+        StopAgentButton.Content =
+            "Stop";
+
+        StopAgentButton.IsEnabled =
+            true;
+
+        StopAgentButton.Visibility =
+            Visibility.Visible;
+
+        AgentStateText.Text =
+            "Working";
+
+        AgentStateDot.Fill =
+            FindResource(
+                "AccentStrongBrush")
+            as Brush;
+
+        AddActivityLine(
+            "Starting task…");
+    }
+
+    private void SetAgentStateReady()
+    {
+        AgentStateText.Text =
+            "Ready";
+
+        AgentStateDot.Fill =
+            FindResource(
+                "SuccessBrush")
+            as Brush;
+    }
+
+    private void AddActivityLine(
+        string message)
+    {
+        if (string.IsNullOrWhiteSpace(
+                message))
+        {
             return;
         }
 
-        AddConversationMessage(
-            new ChatMessage
-            {
-                Role =
-                    MessageRole.Assistant,
+        if (_activityEntries.Count > 0
+            && string.Equals(
+                _activityEntries[^1],
+                message,
+                StringComparison.Ordinal))
+        {
+            return;
+        }
 
-                Content =
-                    "Update complete. Restarting into the new build..."
-            });
+        _activityEntries.Add(
+            message);
 
-        await Task.Delay(
-            1200);
-
-        Application.Current.Shutdown();
+        while (_activityEntries.Count > 6)
+        {
+            _activityEntries.RemoveAt(
+                0);
+        }
     }
 
     private void AddConversationMessage(
@@ -501,8 +671,7 @@ public partial class MainWindow : Window
         }
         catch
         {
-            // The icon is cosmetic.
-            // A missing resource should never prevent Seko from starting.
+            // Cosmetic only.
         }
     }
 

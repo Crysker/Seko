@@ -9,43 +9,29 @@ namespace Seko.Infrastructure.Agent;
 
 public sealed class OllamaAgent :
     IAgent,
-    IRestartAwareAgent
+    IAgentActivitySource
 {
-    private const int MaximumToolRounds =
-        12;
-
-    private const int MaximumNoProgressRounds =
-        3;
-
-    private const int MaximumConversationMessages =
-        8;
+    private const int MaximumToolRounds = 12;
+    private const int MaximumNoProgressRounds = 3;
+    private const int MaximumConversationMessages = 8;
 
     private static readonly HttpClient HttpClient =
         new()
         {
-            BaseAddress =
-                new Uri(
-                    "http://localhost:11434"),
-
-            Timeout =
-                TimeSpan.FromMinutes(5)
+            BaseAddress = new Uri("http://localhost:11434"),
+            Timeout = TimeSpan.FromMinutes(5)
         };
 
     private readonly Workspace _workspace;
     private readonly SekoToolHost _toolHost;
     private readonly string _model;
 
-    public bool RestartRequested
-    {
-        get;
-        private set;
-    }
+    public event Action<AgentActivity>? ActivityChanged;
 
     public OllamaAgent(
         Workspace workspace)
     {
-        _workspace =
-            workspace;
+        _workspace = workspace;
 
         _toolHost =
             new SekoToolHost(
@@ -61,8 +47,9 @@ public sealed class OllamaAgent :
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
     {
-        RestartRequested =
-            false;
+        Report(
+            AgentActivityKind.Thinking,
+            "Preparing task…");
 
         await _toolHost.BeginTaskAsync(
             cancellationToken);
@@ -83,17 +70,10 @@ public sealed class OllamaAgent :
             RequiresWorkspaceTools(
                 userRequest);
 
-        var toolRetryUsed =
-            false;
-
-        var anyRealToolExecuted =
-            false;
-
-        var modificationGeneration =
-            0;
-
-        var noProgressRounds =
-            0;
+        var toolRetryUsed = false;
+        var anyRealToolExecuted = false;
+        var modificationGeneration = 0;
+        var noProgressRounds = 0;
 
         var previousToolCalls =
             new HashSet<string>(
@@ -104,6 +84,12 @@ public sealed class OllamaAgent :
              round++)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            Report(
+                AgentActivityKind.Thinking,
+                round == 0
+                    ? "Thinking…"
+                    : "Reviewing tool results…");
 
             using var responseDocument =
                 await SendChatRequestAsync(
@@ -118,9 +104,12 @@ public sealed class OllamaAgent :
                     "message",
                     out var messageElement))
             {
-                return
-                    CreateAssistantMessage(
-                        "Ollama responded, but the response did not contain a message.");
+                Report(
+                    AgentActivityKind.Error,
+                    "Ollama returned an invalid response.");
+
+                return CreateAssistantMessage(
+                    "Ollama responded, but the response did not contain a message.");
             }
 
             var content =
@@ -131,11 +120,8 @@ public sealed class OllamaAgent :
             var assistantMessage =
                 new JsonObject
                 {
-                    ["role"] =
-                        "assistant",
-
-                    ["content"] =
-                        content
+                    ["role"] = "assistant",
+                    ["content"] = content
                 };
 
             var hasToolCalls =
@@ -165,14 +151,16 @@ public sealed class OllamaAgent :
                     && !anyRealToolExecuted
                     && !toolRetryUsed)
                 {
-                    toolRetryUsed =
-                        true;
+                    toolRetryUsed = true;
+
+                    Report(
+                        AgentActivityKind.Thinking,
+                        "Retrying with workspace tools…");
 
                     messages.Add(
                         new JsonObject
                         {
-                            ["role"] =
-                                "user",
+                            ["role"] = "user",
 
                             ["content"] =
                                 """
@@ -191,21 +179,21 @@ public sealed class OllamaAgent :
                     continue;
                 }
 
-                return
-                    await FinishTaskAsync(
-                        content,
-                        userRequest,
-                        workspaceToolsRequired,
-                        cancellationToken);
+                return await FinishTaskAsync(
+                    content,
+                    userRequest,
+                    workspaceToolsRequired,
+                    cancellationToken);
             }
 
-            var roundMadeProgress =
-                false;
+            var roundMadeProgress = false;
 
             foreach (
                 var toolCall
                 in toolCallsElement.EnumerateArray())
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (!toolCall.TryGetProperty(
                         "function",
                         out var functionElement))
@@ -224,8 +212,7 @@ public sealed class OllamaAgent :
                     continue;
                 }
 
-                var argumentsJson =
-                    "{}";
+                var argumentsJson = "{}";
 
                 if (functionElement.TryGetProperty(
                         "arguments",
@@ -245,14 +232,15 @@ public sealed class OllamaAgent :
                 if (!previousToolCalls.Add(
                         callSignature))
                 {
+                    Report(
+                        AgentActivityKind.Tool,
+                        $"Skipped duplicate {toolName} call.");
+
                     messages.Add(
                         new JsonObject
                         {
-                            ["role"] =
-                                "tool",
-
-                            ["tool_name"] =
-                                toolName,
+                            ["role"] = "tool",
+                            ["tool_name"] = toolName,
 
                             ["content"] =
                                 """
@@ -270,17 +258,34 @@ public sealed class OllamaAgent :
                     continue;
                 }
 
+                Report(
+                    AgentActivityKind.Tool,
+                    DescribeToolCall(
+                        toolName,
+                        argumentsJson));
+
+                /*
+                    Source-file writes are deliberately allowed to finish
+                    atomically even if Stop is pressed during the tiny write.
+
+                    Cancellation is checked immediately afterward.
+                    This avoids interrupting a file halfway through a write.
+                */
+                var toolCancellationToken =
+                    toolName is "write_file" or "replace_text"
+                        ? CancellationToken.None
+                        : cancellationToken;
+
                 var result =
                     await _toolHost.ExecuteAsync(
                         toolName,
                         argumentsJson,
-                        cancellationToken);
+                        toolCancellationToken);
 
-                anyRealToolExecuted =
-                    true;
+                cancellationToken.ThrowIfCancellationRequested();
 
-                roundMadeProgress =
-                    true;
+                anyRealToolExecuted = true;
+                roundMadeProgress = true;
 
                 if (IsSuccessfulModification(
                         result))
@@ -288,24 +293,29 @@ public sealed class OllamaAgent :
                     modificationGeneration++;
                 }
 
+                if (result.StartsWith(
+                        "ERROR:",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    Report(
+                        AgentActivityKind.Error,
+                        Shorten(
+                            result,
+                            120));
+                }
+
                 messages.Add(
                     new JsonObject
                     {
-                        ["role"] =
-                            "tool",
-
-                        ["tool_name"] =
-                            toolName,
-
-                        ["content"] =
-                            result
+                        ["role"] = "tool",
+                        ["tool_name"] = toolName,
+                        ["content"] = result
                     });
             }
 
             if (roundMadeProgress)
             {
-                noProgressRounds =
-                    0;
+                noProgressRounds = 0;
             }
             else
             {
@@ -314,11 +324,14 @@ public sealed class OllamaAgent :
 
             if (noProgressRounds == 2)
             {
+                Report(
+                    AgentActivityKind.Thinking,
+                    "Avoiding repeated tool calls…");
+
                 messages.Add(
                     new JsonObject
                     {
-                        ["role"] =
-                            "user",
+                        ["role"] = "user",
 
                         ["content"] =
                             """
@@ -338,19 +351,18 @@ public sealed class OllamaAgent :
                     });
             }
 
-            if (noProgressRounds >= MaximumNoProgressRounds)
+            if (noProgressRounds
+                >= MaximumNoProgressRounds)
             {
-                return
-                    await FinishSafetyStopAsync(
-                        userRequest,
-                        cancellationToken);
+                return await FinishSafetyStopAsync(
+                    userRequest,
+                    cancellationToken);
             }
         }
 
-        return
-            await FinishSafetyStopAsync(
-                userRequest,
-                cancellationToken);
+        return await FinishSafetyStopAsync(
+            userRequest,
+            cancellationToken);
     }
 
     private async Task<ChatMessage> FinishTaskAsync(
@@ -359,11 +371,32 @@ public sealed class OllamaAgent :
         bool workspaceToolsRequired,
         CancellationToken cancellationToken)
     {
-        content =
-            await AppendGitAndSelfUpdateResultAsync(
-                content,
+        Report(
+            AgentActivityKind.Thinking,
+            "Finalizing…");
+
+        var gitResult =
+            await _toolHost.TryAutoCommitAsync(
                 userRequest,
                 cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(
+                gitResult))
+        {
+            Report(
+                AgentActivityKind.Git,
+                Shorten(
+                    gitResult,
+                    160));
+
+            if (!string.IsNullOrWhiteSpace(
+                    content))
+            {
+                content += "\n\n";
+            }
+
+            content += gitResult;
+        }
 
         if (string.IsNullOrWhiteSpace(
                 content))
@@ -374,75 +407,43 @@ public sealed class OllamaAgent :
                     : "Done.";
         }
 
-        return
-            CreateAssistantMessage(
-                content.Trim());
+        Report(
+            AgentActivityKind.Completed,
+            "Task complete.");
+
+        return CreateAssistantMessage(
+            content.Trim());
     }
 
     private async Task<ChatMessage> FinishSafetyStopAsync(
         string userRequest,
         CancellationToken cancellationToken)
     {
-        var content =
-            "I stopped because I detected repeated tool calls without meaningful progress.";
+        Report(
+            AgentActivityKind.Error,
+            "Stopped repeated tool calls.");
 
-        content =
-            await AppendGitAndSelfUpdateResultAsync(
-                content,
-                userRequest,
-                cancellationToken);
-
-        content +=
-            "\n\nI did not continue looping automatically.";
-
-        return
-            CreateAssistantMessage(
-                content);
-    }
-
-    private async Task<string> AppendGitAndSelfUpdateResultAsync(
-        string content,
-        string userRequest,
-        CancellationToken cancellationToken)
-    {
         var gitResult =
             await _toolHost.TryAutoCommitAsync(
                 userRequest,
                 cancellationToken);
 
+        var content =
+            "I stopped because I detected repeated tool calls without meaningful progress.";
+
         if (!string.IsNullOrWhiteSpace(
                 gitResult))
         {
-            content =
-                AppendSection(
-                    content,
-                    gitResult);
+            content +=
+                "\n\n" +
+                gitResult;
         }
 
-        if (!WasAutomaticCommitCreated(
-                gitResult))
-        {
-            return content;
-        }
+        content +=
+            "\n\nI did not continue looping automatically.";
 
-        var selfUpdateResult =
-            await SekoSelfUpdateCoordinator.PushAsync(
-                _workspace,
-                cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(
-                selfUpdateResult.Message))
-        {
-            content =
-                AppendSection(
-                    content,
-                    selfUpdateResult.Message);
-        }
-
-        RestartRequested =
-            selfUpdateResult.ShouldRestart;
-
-        return content;
+        return CreateAssistantMessage(
+            content);
     }
 
     private async Task<JsonDocument> SendChatRequestAsync(
@@ -453,8 +454,7 @@ public sealed class OllamaAgent :
         var request =
             new JsonObject
             {
-                ["model"] =
-                    _model,
+                ["model"] = _model,
 
                 ["messages"] =
                     messages.DeepClone(),
@@ -462,14 +462,9 @@ public sealed class OllamaAgent :
                 ["tools"] =
                     _toolHost.CreateToolDefinitions(),
 
-                ["stream"] =
-                    false,
-
-                ["think"] =
-                    false,
-
-                ["keep_alive"] =
-                    "30m",
+                ["stream"] = false,
+                ["think"] = false,
+                ["keep_alive"] = "30m",
 
                 ["options"] =
                     new JsonObject
@@ -479,11 +474,8 @@ public sealed class OllamaAgent :
                                 ? 0.05
                                 : 0.35,
 
-                        ["num_ctx"] =
-                            8192,
-
-                        ["num_predict"] =
-                            2048
+                        ["num_ctx"] = 8192,
+                        ["num_predict"] = 2048
                     }
             };
 
@@ -518,9 +510,8 @@ public sealed class OllamaAgent :
                     responseText);
             }
 
-            return
-                JsonDocument.Parse(
-                    responseText);
+            return JsonDocument.Parse(
+                responseText);
         }
     }
 
@@ -532,11 +523,8 @@ public sealed class OllamaAgent :
             {
                 new JsonObject
                 {
-                    ["role"] =
-                        "system",
-
-                    ["content"] =
-                        BuildSystemPrompt()
+                    ["role"] = "system",
+                    ["content"] = BuildSystemPrompt()
                 }
             };
 
@@ -545,7 +533,8 @@ public sealed class OllamaAgent :
             in conversation.TakeLast(
                 MaximumConversationMessages))
         {
-            if (message.Role == MessageRole.System)
+            if (message.Role
+                == MessageRole.System)
             {
                 continue;
             }
@@ -646,10 +635,8 @@ public sealed class OllamaAgent :
             6. If the build fails, use the compiler output to repair the error.
             7. Rebuild after a repair.
             8. Once the build succeeds, stop and summarize.
-            9. Do not repeatedly inspect files that have already given you the
-               information required.
 
-            GIT AND SELF-UPDATE
+            GIT SAFETY
             The host records whether Git was clean before the task began.
 
             If unrelated uncommitted changes existed before the task,
@@ -657,31 +644,115 @@ public sealed class OllamaAgent :
 
             Files you modify through your tools are tracked.
 
-            After a successful Seko source change and successful build,
-            the host automatically:
-            - creates a local Git commit
-            - pushes that commit to GitHub
-            - requests an application restart
+            After successful code changes and a successful build, the host may
+            create a LOCAL Git commit containing only those changed files.
 
-            You do not need to tell Serkan to run git push manually.
-
-            You do not need to tell Serkan to restart Seko manually after a
-            successful self-update.
-
-            The desktop application will restart itself after your final response.
+            Never push to GitHub automatically.
 
             SECURITY
             Stay inside the active workspace.
 
-            Never seek:
-            - passwords
-            - API keys
-            - credentials
-            - private keys
-            - secret files
+            Never seek passwords, API keys, credentials or private keys.
 
             Never bypass safeguards or silently expand your own permissions.
             """;
+    }
+
+    private void Report(
+        AgentActivityKind kind,
+        string message)
+    {
+        ActivityChanged?.Invoke(
+            new AgentActivity(
+                kind,
+                message));
+    }
+
+    private static string DescribeToolCall(
+        string toolName,
+        string argumentsJson)
+    {
+        string? path = null;
+        string? name = null;
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    argumentsJson);
+
+            var root =
+                document.RootElement;
+
+            if (root.TryGetProperty(
+                    "path",
+                    out var pathElement)
+                && pathElement.ValueKind
+                    == JsonValueKind.String)
+            {
+                path =
+                    pathElement.GetString();
+            }
+
+            if (root.TryGetProperty(
+                    "name",
+                    out var nameElement)
+                && nameElement.ValueKind
+                    == JsonValueKind.String)
+            {
+                name =
+                    nameElement.GetString();
+            }
+        }
+        catch
+        {
+            // Activity text is cosmetic.
+        }
+
+        return toolName switch
+        {
+            "git_status" =>
+                "Checking Git status…",
+
+            "git_diff" =>
+                "Reviewing Git changes…",
+
+            "find_files" =>
+                string.IsNullOrWhiteSpace(name)
+                    ? "Finding files…"
+                    : $"Finding {name}…",
+
+            "find_text" =>
+                string.IsNullOrWhiteSpace(path)
+                    ? "Inspecting relevant source…"
+                    : $"Inspecting {path}…",
+
+            "list_files" =>
+                string.IsNullOrWhiteSpace(path)
+                    ? "Inspecting workspace…"
+                    : $"Listing {path}…",
+
+            "read_file" =>
+                string.IsNullOrWhiteSpace(path)
+                    ? "Reading source file…"
+                    : $"Reading {path}…",
+
+            "replace_text" =>
+                string.IsNullOrWhiteSpace(path)
+                    ? "Editing source…"
+                    : $"Editing {path}…",
+
+            "write_file" =>
+                string.IsNullOrWhiteSpace(path)
+                    ? "Writing source file…"
+                    : $"Writing {path}…",
+
+            "build_project" =>
+                "Building project…",
+
+            _ =>
+                $"Running {toolName}…"
+        };
     }
 
     private static bool RequiresWorkspaceTools(
@@ -759,34 +830,6 @@ public sealed class OllamaAgent :
                 StringComparison.Ordinal);
     }
 
-    private static bool WasAutomaticCommitCreated(
-        string? gitResult)
-    {
-        return
-            !string.IsNullOrWhiteSpace(
-                gitResult)
-
-            && gitResult.StartsWith(
-                "Git: committed locally as ",
-                StringComparison.Ordinal);
-    }
-
-    private static string AppendSection(
-        string existing,
-        string section)
-    {
-        if (string.IsNullOrWhiteSpace(
-                existing))
-        {
-            return section;
-        }
-
-        return
-            existing.TrimEnd()
-            + "\n\n"
-            + section.Trim();
-    }
-
     private static string GetOptionalString(
         JsonElement element,
         string propertyName)
@@ -794,15 +837,38 @@ public sealed class OllamaAgent :
         if (!element.TryGetProperty(
                 propertyName,
                 out var property)
-            || property.ValueKind != JsonValueKind.String)
+            || property.ValueKind
+                != JsonValueKind.String)
         {
-            return
-                string.Empty;
+            return string.Empty;
+        }
+
+        return property.GetString()
+               ?? string.Empty;
+    }
+
+    private static string Shorten(
+        string text,
+        int maximumLength)
+    {
+        var singleLine =
+            text.Replace(
+                    "\r",
+                    " ")
+                .Replace(
+                    "\n",
+                    " ")
+                .Trim();
+
+        if (singleLine.Length
+            <= maximumLength)
+        {
+            return singleLine;
         }
 
         return
-            property.GetString()
-            ?? string.Empty;
+            singleLine[..maximumLength]
+            + "…";
     }
 
     private static ChatMessage CreateAssistantMessage(
