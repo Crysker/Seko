@@ -1,11 +1,15 @@
 ﻿using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Desktop.Services;
 using Seko.Infrastructure.Agent;
 using Seko.Infrastructure.Workspaces;
 
@@ -25,10 +29,13 @@ public partial class MainWindow : Window
     private Workspace _activeWorkspace;
 
     private bool _isSending;
+    private bool _restartScheduled;
 
     public MainWindow()
     {
         InitializeComponent();
+
+        ApplySekoWindowIcon();
 
         _workspaceStore =
             new JsonWorkspaceStore();
@@ -38,7 +45,8 @@ public partial class MainWindow : Window
 
         foreach (var workspace in state.Workspaces)
         {
-            _workspaces.Add(workspace);
+            _workspaces.Add(
+                workspace);
         }
 
         _activeWorkspace =
@@ -57,10 +65,11 @@ public partial class MainWindow : Window
             CreateAgentForWorkspace(
                 _activeWorkspace);
 
-        _conversation.Add(
+        AddConversationMessage(
             new ChatMessage
             {
-                Role = MessageRole.Assistant,
+                Role =
+                    MessageRole.Assistant,
 
                 Content =
                     "I'm online locally.\n\n" +
@@ -74,6 +83,8 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             MessageInput.Focus();
+
+            ScrollConversationToBottom();
         };
 
         Closing += (_, _) =>
@@ -104,7 +115,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        e.Handled = true;
+        e.Handled =
+            true;
 
         await SendCurrentMessageAsync();
     }
@@ -119,11 +131,13 @@ public partial class MainWindow : Window
                 Title =
                     "Choose a folder for the new Seko workspace",
 
-                Multiselect = false
+                Multiselect =
+                    false
             };
 
         var result =
-            dialog.ShowDialog(this);
+            dialog.ShowDialog(
+                this);
 
         if (result != true)
         {
@@ -170,9 +184,14 @@ public partial class MainWindow : Window
         var workspace =
             new Workspace
             {
-                Id = Guid.NewGuid(),
-                Name = workspaceName,
-                RootPath = selectedPath
+                Id =
+                    Guid.NewGuid(),
+
+                Name =
+                    workspaceName,
+
+                RootPath =
+                    selectedPath
             };
 
         _workspaces.Add(
@@ -189,7 +208,7 @@ public partial class MainWindow : Window
         RoutedEventArgs e)
     {
         if (sender
-            is not System.Windows.Controls.Button button)
+            is not Button button)
         {
             return;
         }
@@ -220,10 +239,11 @@ public partial class MainWindow : Window
 
         _conversation.Clear();
 
-        _conversation.Add(
+        AddConversationMessage(
             new ChatMessage
             {
-                Role = MessageRole.Assistant,
+                Role =
+                    MessageRole.Assistant,
 
                 Content =
                     $"Switched to {workspace.Name}.\n\n" +
@@ -236,8 +256,9 @@ public partial class MainWindow : Window
     private static IAgent CreateAgentForWorkspace(
         Workspace workspace)
     {
-        return new OllamaAgent(
-            workspace);
+        return
+            new OllamaAgent(
+                workspace);
     }
 
     private WorkspaceState LoadWorkspaceState()
@@ -269,11 +290,15 @@ public partial class MainWindow : Window
                 generalWorkspace.Id;
         }
 
-        return new WorkspaceState
-        {
-            Workspaces = validWorkspaces,
-            ActiveWorkspaceId = state.ActiveWorkspaceId
-        };
+        return
+            new WorkspaceState
+            {
+                Workspaces =
+                    validWorkspaces,
+
+                ActiveWorkspaceId =
+                    state.ActiveWorkspaceId
+            };
     }
 
     private void SaveWorkspaceState()
@@ -303,7 +328,8 @@ public partial class MainWindow : Window
 
     private async Task SendCurrentMessageAsync()
     {
-        if (_isSending)
+        if (_isSending
+            || _restartScheduled)
         {
             return;
         }
@@ -311,12 +337,14 @@ public partial class MainWindow : Window
         var text =
             MessageInput.Text.Trim();
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(
+                text))
         {
             return;
         }
 
-        _isSending = true;
+        _isSending =
+            true;
 
         MessageInput.IsEnabled =
             false;
@@ -326,11 +354,14 @@ public partial class MainWindow : Window
             var userMessage =
                 new ChatMessage
                 {
-                    Role = MessageRole.User,
-                    Content = text
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        text
                 };
 
-            _conversation.Add(
+            AddConversationMessage(
                 userMessage);
 
             MessageInput.Clear();
@@ -339,15 +370,23 @@ public partial class MainWindow : Window
                 await _agent.SendAsync(
                     _conversation.ToList());
 
-            _conversation.Add(
+            AddConversationMessage(
                 response);
+
+            if (_agent
+                is IRestartAwareAgent restartAwareAgent
+                && restartAwareAgent.RestartRequested)
+            {
+                await RestartAfterSelfUpdateAsync();
+            }
         }
         catch (Exception exception)
         {
-            _conversation.Add(
+            AddConversationMessage(
                 new ChatMessage
                 {
-                    Role = MessageRole.Assistant,
+                    Role =
+                        MessageRole.Assistant,
 
                     Content =
                         "Something went wrong:\n\n" +
@@ -356,12 +395,114 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _isSending = false;
+            _isSending =
+                false;
+
+            if (!_restartScheduled)
+            {
+                MessageInput.IsEnabled =
+                    true;
+
+                MessageInput.Focus();
+            }
+
+            ScrollConversationToBottom();
+        }
+    }
+
+    private async Task RestartAfterSelfUpdateAsync()
+    {
+        if (_restartScheduled)
+        {
+            return;
+        }
+
+        _restartScheduled =
+            true;
+
+        MessageInput.IsEnabled =
+            false;
+
+        var scheduled =
+            SekoRestartService.TryScheduleRestart(
+                _activeWorkspace.RootPath,
+                Environment.ProcessId,
+                out var error);
+
+        if (!scheduled)
+        {
+            _restartScheduled =
+                false;
 
             MessageInput.IsEnabled =
                 true;
 
-            MessageInput.Focus();
+            AddConversationMessage(
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.Assistant,
+
+                    Content =
+                        "The update is committed, but I couldn't schedule my restart.\n\n" +
+                        error
+                });
+
+            return;
+        }
+
+        AddConversationMessage(
+            new ChatMessage
+            {
+                Role =
+                    MessageRole.Assistant,
+
+                Content =
+                    "Update complete. Restarting into the new build..."
+            });
+
+        await Task.Delay(
+            1200);
+
+        Application.Current.Shutdown();
+    }
+
+    private void AddConversationMessage(
+        ChatMessage message)
+    {
+        _conversation.Add(
+            message);
+
+        ScrollConversationToBottom();
+    }
+
+    private void ScrollConversationToBottom()
+    {
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.ContextIdle,
+            new Action(
+                () =>
+                {
+                    ConversationScrollViewer.ScrollToEnd();
+                }));
+    }
+
+    private void ApplySekoWindowIcon()
+    {
+        try
+        {
+            if (Application.Current.Resources[
+                    "SekoAppIcon"]
+                is ImageSource icon)
+            {
+                Icon =
+                    icon;
+            }
+        }
+        catch
+        {
+            // The icon is cosmetic.
+            // A missing resource should never prevent Seko from starting.
         }
     }
 
@@ -381,11 +522,17 @@ public partial class MainWindow : Window
         Directory.CreateDirectory(
             rootPath);
 
-        return new Workspace
-        {
-            Id = Guid.NewGuid(),
-            Name = "General",
-            RootPath = rootPath
-        };
+        return
+            new Workspace
+            {
+                Id =
+                    Guid.NewGuid(),
+
+                Name =
+                    "General",
+
+                RootPath =
+                    rootPath
+            };
     }
 }

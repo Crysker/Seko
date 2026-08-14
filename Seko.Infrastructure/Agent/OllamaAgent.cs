@@ -7,7 +7,9 @@ using Seko.Core.Workspaces;
 
 namespace Seko.Infrastructure.Agent;
 
-public sealed class OllamaAgent : IAgent
+public sealed class OllamaAgent :
+    IAgent,
+    IRestartAwareAgent
 {
     private const int MaximumToolRounds =
         12;
@@ -33,6 +35,12 @@ public sealed class OllamaAgent : IAgent
     private readonly SekoToolHost _toolHost;
     private readonly string _model;
 
+    public bool RestartRequested
+    {
+        get;
+        private set;
+    }
+
     public OllamaAgent(
         Workspace workspace)
     {
@@ -53,6 +61,9 @@ public sealed class OllamaAgent : IAgent
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
     {
+        RestartRequested =
+            false;
+
         await _toolHost.BeginTaskAsync(
             cancellationToken);
 
@@ -348,24 +359,11 @@ public sealed class OllamaAgent : IAgent
         bool workspaceToolsRequired,
         CancellationToken cancellationToken)
     {
-        var gitResult =
-            await _toolHost.TryAutoCommitAsync(
+        content =
+            await AppendGitAndSelfUpdateResultAsync(
+                content,
                 userRequest,
                 cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(
-                gitResult))
-        {
-            if (!string.IsNullOrWhiteSpace(
-                    content))
-            {
-                content +=
-                    "\n\n";
-            }
-
-            content +=
-                gitResult;
-        }
 
         if (string.IsNullOrWhiteSpace(
                 content))
@@ -385,21 +383,14 @@ public sealed class OllamaAgent : IAgent
         string userRequest,
         CancellationToken cancellationToken)
     {
-        var gitResult =
-            await _toolHost.TryAutoCommitAsync(
-                userRequest,
-                cancellationToken);
-
         var content =
             "I stopped because I detected repeated tool calls without meaningful progress.";
 
-        if (!string.IsNullOrWhiteSpace(
-                gitResult))
-        {
-            content +=
-                "\n\n" +
-                gitResult;
-        }
+        content =
+            await AppendGitAndSelfUpdateResultAsync(
+                content,
+                userRequest,
+                cancellationToken);
 
         content +=
             "\n\nI did not continue looping automatically.";
@@ -407,6 +398,51 @@ public sealed class OllamaAgent : IAgent
         return
             CreateAssistantMessage(
                 content);
+    }
+
+    private async Task<string> AppendGitAndSelfUpdateResultAsync(
+        string content,
+        string userRequest,
+        CancellationToken cancellationToken)
+    {
+        var gitResult =
+            await _toolHost.TryAutoCommitAsync(
+                userRequest,
+                cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(
+                gitResult))
+        {
+            content =
+                AppendSection(
+                    content,
+                    gitResult);
+        }
+
+        if (!WasAutomaticCommitCreated(
+                gitResult))
+        {
+            return content;
+        }
+
+        var selfUpdateResult =
+            await SekoSelfUpdateCoordinator.PushAsync(
+                _workspace,
+                cancellationToken);
+
+        if (!string.IsNullOrWhiteSpace(
+                selfUpdateResult.Message))
+        {
+            content =
+                AppendSection(
+                    content,
+                    selfUpdateResult.Message);
+        }
+
+        RestartRequested =
+            selfUpdateResult.ShouldRestart;
+
+        return content;
     }
 
     private async Task<JsonDocument> SendChatRequestAsync(
@@ -429,12 +465,6 @@ public sealed class OllamaAgent : IAgent
                 ["stream"] =
                     false,
 
-                /*
-                    Fast mode for routine agent work.
-
-                    We can later expose a separate Deep Think mode instead of
-                    paying reasoning latency on every workspace operation.
-                */
                 ["think"] =
                     false,
 
@@ -569,7 +599,7 @@ public sealed class OllamaAgent : IAgent
             If you need one section of a known file:
             use find_text.
 
-            Do NOT read an entire large file merely to locate one small piece
+            Do not read an entire large file merely to locate one small piece
             of text.
 
             Use list_files only when you genuinely need a directory overview.
@@ -619,7 +649,7 @@ public sealed class OllamaAgent : IAgent
             9. Do not repeatedly inspect files that have already given you the
                information required.
 
-            GIT SAFETY
+            GIT AND SELF-UPDATE
             The host records whether Git was clean before the task began.
 
             If unrelated uncommitted changes existed before the task,
@@ -627,10 +657,18 @@ public sealed class OllamaAgent : IAgent
 
             Files you modify through your tools are tracked.
 
-            After successful code changes and a successful build, the host may
-            create a LOCAL Git commit containing only those changed files.
+            After a successful Seko source change and successful build,
+            the host automatically:
+            - creates a local Git commit
+            - pushes that commit to GitHub
+            - requests an application restart
 
-            Never push to GitHub automatically.
+            You do not need to tell Serkan to run git push manually.
+
+            You do not need to tell Serkan to restart Seko manually after a
+            successful self-update.
+
+            The desktop application will restart itself after your final response.
 
             SECURITY
             Stay inside the active workspace.
@@ -719,6 +757,34 @@ public sealed class OllamaAgent : IAgent
             || toolResult.StartsWith(
                 "Wrote ",
                 StringComparison.Ordinal);
+    }
+
+    private static bool WasAutomaticCommitCreated(
+        string? gitResult)
+    {
+        return
+            !string.IsNullOrWhiteSpace(
+                gitResult)
+
+            && gitResult.StartsWith(
+                "Git: committed locally as ",
+                StringComparison.Ordinal);
+    }
+
+    private static string AppendSection(
+        string existing,
+        string section)
+    {
+        if (string.IsNullOrWhiteSpace(
+                existing))
+        {
+            return section;
+        }
+
+        return
+            existing.TrimEnd()
+            + "\n\n"
+            + section.Trim();
     }
 
     private static string GetOptionalString(
