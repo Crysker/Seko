@@ -1,0 +1,59 @@
+# .NET
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code machine-specific settings
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Build output
+Debug/
+Release/
+x64/
+x86/
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+
+# Logs / temp
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Secrets
+.env
+.env.*
+!.env.example
+secrets.json
+credentials.json
+appsettings.Local.json
+appsettings.Development.local.json
+
+# Certificates / private keys
+*.pem
+*.pfx
+*.p12
+*.key
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local Seko runtime data
+.seko/
+
+# Local AI model storage if ever placed here
+models/
