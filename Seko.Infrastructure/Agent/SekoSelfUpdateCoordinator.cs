@@ -12,17 +12,6 @@ internal sealed record SekoSelfUpdateResult(
 
 internal static class SekoSelfUpdateCoordinator
 {
-    private static readonly HashSet<string> RestartExtensions =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ".cs",
-            ".xaml",
-            ".csproj",
-            ".sln",
-            ".props",
-            ".targets"
-        };
-
     public static bool IsSekoRepository(
         Workspace workspace)
     {
@@ -137,6 +126,26 @@ internal static class SekoSelfUpdateCoordinator
                     string.Empty);
         }
 
+        /*
+            A new Git commit was created during this Seko task.
+
+            Because this coordinator only runs for Seko's own verified
+            repository, a new self-update commit is enough to request a restart.
+
+            This deliberately avoids false negatives caused by trying to infer
+            whether a changed extension requires a restart.
+
+            Restarting after a small non-runtime self-update is harmless.
+            Failing to restart after a real source/UI update is not.
+        */
+        const bool shouldRestart =
+            true;
+
+        report?.Invoke(
+            new AgentActivity(
+                AgentActivityKind.Git,
+                "Self-update commit detected."));
+
         var statusResult =
             await RunProcessAsync(
                 "git",
@@ -150,6 +159,11 @@ internal static class SekoSelfUpdateCoordinator
 
         if (statusResult.ExitCode != 0)
         {
+            report?.Invoke(
+                new AgentActivity(
+                    AgentActivityKind.Error,
+                    "Git status could not be verified."));
+
             return
                 new SekoSelfUpdateResult(
                     true,
@@ -174,39 +188,10 @@ internal static class SekoSelfUpdateCoordinator
                     "Self-update: a new commit exists, but additional uncommitted changes remain. Automatic push and restart were skipped for safety.");
         }
 
-        var changedFilesResult =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "diff",
-                    "--name-only",
-                    beforeHead,
-                    afterHead
-                },
-                workspace.RootPath,
-                cancellationToken);
-
-        var shouldRestart =
-            changedFilesResult.ExitCode == 0
-            && changedFilesResult.Output
-                .Split(
-                    new[]
-                    {
-                        '\r',
-                        '\n'
-                    },
-                    StringSplitOptions.RemoveEmptyEntries)
-                .Any(
-                    path =>
-                        RestartExtensions.Contains(
-                            Path.GetExtension(
-                                path)));
-
         report?.Invoke(
             new AgentActivity(
                 AgentActivityKind.Git,
-                "Pushing to GitHub…"));
+                "Pushing to GitHub..."));
 
         var pushResult =
             await RunProcessAsync(
@@ -226,28 +211,35 @@ internal static class SekoSelfUpdateCoordinator
                     AgentActivityKind.Git,
                     "Push complete."));
 
-            if (shouldRestart)
-            {
-                report?.Invoke(
-                    new AgentActivity(
-                        AgentActivityKind.Completed,
-                        "Update ready. Restarting…"));
-            }
+            report?.Invoke(
+                new AgentActivity(
+                    AgentActivityKind.Completed,
+                    "Update ready. Restarting..."));
 
             return
                 new SekoSelfUpdateResult(
                     true,
                     true,
                     shouldRestart,
-                    shouldRestart
-                        ? $"GitHub: pushed {ShortHash(afterHead)} successfully.\nUpdate: restart scheduled."
-                        : $"GitHub: pushed {ShortHash(afterHead)} successfully.");
+                    $"GitHub: pushed {ShortHash(afterHead)} successfully.\n" +
+                    "Update: restart requested.");
         }
 
+        /*
+            The local commit is already safe.
+
+            A GitHub/network failure should not prevent the locally updated
+            application from loading its new source.
+        */
         report?.Invoke(
             new AgentActivity(
                 AgentActivityKind.Error,
                 "GitHub push failed. Local commit is safe."));
+
+        report?.Invoke(
+            new AgentActivity(
+                AgentActivityKind.Completed,
+                "Restarting into the local update..."));
 
         return
             new SekoSelfUpdateResult(
@@ -256,9 +248,7 @@ internal static class SekoSelfUpdateCoordinator
                 shouldRestart,
                 "GitHub: automatic push failed. The local commit is still safe.\n\n" +
                 pushResult.Output +
-                (shouldRestart
-                    ? "\n\nUpdate: restarting into the local build anyway."
-                    : string.Empty));
+                "\n\nUpdate: restarting into the local build anyway.");
     }
 
     private static string ShortHash(
@@ -303,7 +293,8 @@ internal static class SekoSelfUpdateCoordinator
             "GIT_TERMINAL_PROMPT"] =
             "0";
 
-        foreach (var argument in arguments)
+        foreach (var argument
+                 in arguments)
         {
             startInfo.ArgumentList.Add(
                 argument);
