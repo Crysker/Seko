@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Infrastructure.Agent;
 
@@ -11,6 +12,7 @@ public sealed class SekoTransactionalAgent :
 {
     private readonly Workspace _workspace;
     private readonly IAgent _innerAgent;
+    private readonly SekoTaskLogger _taskLogger;
 
     private bool _completedObserved;
 
@@ -25,6 +27,9 @@ public sealed class SekoTransactionalAgent :
 
         _innerAgent =
             innerAgent;
+
+        _taskLogger =
+            new SekoTaskLogger();
 
         if (_innerAgent
             is IAgentActivitySource activitySource)
@@ -41,6 +46,25 @@ public sealed class SekoTransactionalAgent :
         _completedObserved =
             false;
 
+        var userRequest =
+            conversation
+                .LastOrDefault(
+                    message =>
+                        message.Role == MessageRole.User)
+                ?.Content
+            ?? "Seko task";
+
+        var modelName =
+            Environment.GetEnvironmentVariable(
+                "SEKO_OLLAMA_MODEL")
+            ?? "qwen3:8b";
+
+        var logSession =
+            _taskLogger.TryStart(
+                _workspace,
+                modelName,
+                userRequest);
+
         var transaction =
             await GitTaskTransaction.BeginAsync(
                 _workspace.RootPath,
@@ -55,6 +79,11 @@ public sealed class SekoTransactionalAgent :
 
             if (_completedObserved)
             {
+                _taskLogger.TryFinish(
+                    logSession,
+                    "Completed",
+                    response.Content);
+
                 return response;
             }
 
@@ -62,21 +91,59 @@ public sealed class SekoTransactionalAgent :
                 await RollbackAsync(
                     transaction);
 
-            return AppendRollbackResult(
-                response,
-                rollbackResult);
+            var incompleteResponse =
+                AppendRollbackResult(
+                    response,
+                    rollbackResult);
+
+            _taskLogger.TryFinish(
+                logSession,
+                "Incomplete",
+                incompleteResponse.Content);
+
+            return incompleteResponse;
         }
         catch (OperationCanceledException)
         {
-            await RollbackAsync(
-                transaction);
+            var rollbackResult =
+                await RollbackAsync(
+                    transaction);
+
+            var message =
+                rollbackResult.Attempted
+                    ? rollbackResult.Succeeded
+                        ? "Stopped by user. Changes from the incomplete task were rolled back automatically."
+                        : "Stopped by user. Automatic rollback was attempted but could not be fully verified."
+                    : "Stopped by user.";
+
+            _taskLogger.TryFinish(
+                logSession,
+                "Stopped",
+                message);
 
             throw;
         }
-        catch
+        catch (Exception exception)
         {
-            await RollbackAsync(
-                transaction);
+            var rollbackResult =
+                await RollbackAsync(
+                    transaction);
+
+            var message =
+                $"Task failed: {exception.Message}";
+
+            if (rollbackResult.Attempted)
+            {
+                message +=
+                    rollbackResult.Succeeded
+                        ? "\n\nChanges from the failed task were rolled back automatically."
+                        : "\n\nAutomatic rollback was attempted but could not be fully verified.";
+            }
+
+            _taskLogger.TryFinish(
+                logSession,
+                "Failed",
+                message);
 
             throw;
         }
@@ -248,11 +315,10 @@ public sealed class SekoTransactionalAgent :
                     status.Output))
             {
                 /*
-                    Do not enable rollback when the repository was already dirty.
+                    Rollback is enabled only from a clean Git baseline.
 
-                    SekoToolHost already blocks modifications in this state.
-                    More importantly, rollback must never erase changes that
-                    existed before the task began.
+                    This guarantees that pre-existing user changes can never
+                    be erased by the transaction.
                 */
                 return
                     new GitTaskTransaction(
@@ -360,14 +426,6 @@ public sealed class SekoTransactionalAgent :
                     _baselineHead,
                     StringComparison.OrdinalIgnoreCase))
             {
-                /*
-                    A commit was created during the task but the task never
-                    reached the Completed state.
-
-                    The self-update push happens outside this transaction after
-                    the inner agent returns successfully, so an incomplete task
-                    commit should still only be local here.
-                */
                 trackedRestore =
                     await RunGitAsync(
                         _repositoryRoot,
@@ -533,7 +591,7 @@ public sealed class SekoTransactionalAgent :
             catch
             {
                 /*
-                    Final Git verification reports the rollback as incomplete if
+                    Final Git verification reports rollback as incomplete if
                     something could not be removed.
                 */
             }
