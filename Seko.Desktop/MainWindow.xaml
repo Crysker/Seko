@@ -1,4 +1,4 @@
-﻿<Window x:Class="Seko.Desktop.MainWindow"
+<Window x:Class="Seko.Desktop.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Seko"
@@ -326,7 +326,7 @@
                                        Foreground="{StaticResource TextMutedBrush}"
                                        Margin="0,2,0,0"/>
 
-                            <TextBlock Text="v0.1"
+                            <TextBlock Text="v0.1.1"
                                        FontSize="9"
                                        Foreground="#4F5D59"
                                        Margin="0,2,0,0"/>
