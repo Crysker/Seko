@@ -10,7 +10,7 @@ public sealed class SekoSelfUpdatingAgent :
     IRestartAwareAgent
 {
     private readonly Workspace _workspace;
-    private readonly OllamaAgent _innerAgent;
+    private readonly SekoTransactionalAgent _innerAgent;
 
     public event Action<AgentActivity>? ActivityChanged;
 
@@ -26,9 +26,14 @@ public sealed class SekoSelfUpdatingAgent :
         _workspace =
             workspace;
 
-        _innerAgent =
+        var ollamaAgent =
             new OllamaAgent(
                 workspace);
+
+        _innerAgent =
+            new SekoTransactionalAgent(
+                workspace,
+                ollamaAgent);
 
         _innerAgent.ActivityChanged +=
             InnerAgent_ActivityChanged;
