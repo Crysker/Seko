@@ -1,7 +1,6 @@
-using System.Net.Http;
-using System.Text;
+using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
@@ -10,22 +9,36 @@ namespace Seko.Infrastructure.Agent;
 
 public sealed class OllamaAgent : IAgent
 {
+    private const int MaximumToolRounds = 12;
+
     private static readonly HttpClient HttpClient =
         new()
         {
-            BaseAddress = new Uri("http://localhost:11434"),
-            Timeout = TimeSpan.FromMinutes(5)
+            BaseAddress =
+                new Uri(
+                    "http://localhost:11434"),
+
+            Timeout =
+                TimeSpan.FromMinutes(5)
         };
 
     private readonly Workspace _workspace;
+    private readonly SekoToolHost _toolHost;
     private readonly string _model;
 
-    public OllamaAgent(Workspace workspace)
+    public OllamaAgent(
+        Workspace workspace)
     {
-        _workspace = workspace;
+        _workspace =
+            workspace;
+
+        _toolHost =
+            new SekoToolHost(
+                workspace);
 
         _model =
-            Environment.GetEnvironmentVariable("SEKO_OLLAMA_MODEL")
+            Environment.GetEnvironmentVariable(
+                "SEKO_OLLAMA_MODEL")
             ?? "qwen3:8b";
     }
 
@@ -33,122 +46,250 @@ public sealed class OllamaAgent : IAgent
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
     {
-        var request =
-            new OllamaChatRequest
+        await _toolHost.BeginTaskAsync(
+            cancellationToken);
+
+        var messages =
+            BuildMessages(
+                conversation);
+
+        var userRequest =
+            conversation
+                .LastOrDefault(
+                    message =>
+                        message.Role == MessageRole.User)
+                ?.Content
+            ?? "Seko task";
+
+        for (var round = 0;
+             round < MaximumToolRounds;
+             round++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var responseDocument =
+                await SendChatRequestAsync(
+                    messages,
+                    cancellationToken);
+
+            var root =
+                responseDocument.RootElement;
+
+            if (!root.TryGetProperty(
+                    "message",
+                    out var messageElement))
             {
-                Model = _model,
-                Messages = BuildMessages(conversation),
-                Stream = false,
-                Think = false,
-                KeepAlive = "10m",
-                Options =
-                    new OllamaOptions
+                return CreateAssistantMessage(
+                    "Ollama responded, but the response did not contain a message.");
+            }
+
+            var content =
+                messageElement.TryGetProperty(
+                    "content",
+                    out var contentElement)
+                && contentElement.ValueKind == JsonValueKind.String
+                    ? contentElement.GetString()
+                      ?? string.Empty
+                    : string.Empty;
+
+            var assistantMessage =
+                new JsonObject
+                {
+                    ["role"] = "assistant",
+                    ["content"] = content
+                };
+
+            var hasToolCalls =
+                messageElement.TryGetProperty(
+                    "tool_calls",
+                    out var toolCallsElement)
+
+                && toolCallsElement.ValueKind
+                    == JsonValueKind.Array
+
+                && toolCallsElement.GetArrayLength()
+                    > 0;
+
+            if (hasToolCalls)
+            {
+                assistantMessage["tool_calls"] =
+                    JsonNode.Parse(
+                        toolCallsElement.GetRawText());
+            }
+
+            messages.Add(
+                assistantMessage);
+
+            if (!hasToolCalls)
+            {
+                var gitResult =
+                    await _toolHost.TryAutoCommitAsync(
+                        userRequest,
+                        cancellationToken);
+
+                if (!string.IsNullOrWhiteSpace(
+                        gitResult))
+                {
+                    if (!string.IsNullOrWhiteSpace(
+                            content))
                     {
-                        Temperature = 0.35,
-                        NumContext = 8192
+                        content +=
+                            "\n\n";
+                    }
+
+                    content +=
+                        gitResult;
+                }
+
+                if (string.IsNullOrWhiteSpace(
+                        content))
+                {
+                    content =
+                        "Done.";
+                }
+
+                return CreateAssistantMessage(
+                    content.Trim());
+            }
+
+            foreach (
+                var toolCall
+                in toolCallsElement.EnumerateArray())
+            {
+                if (!toolCall.TryGetProperty(
+                        "function",
+                        out var functionElement))
+                {
+                    continue;
+                }
+
+                var toolName =
+                    functionElement.TryGetProperty(
+                        "name",
+                        out var nameElement)
+                    && nameElement.ValueKind
+                        == JsonValueKind.String
+                        ? nameElement.GetString()
+                          ?? string.Empty
+                        : string.Empty;
+
+                if (string.IsNullOrWhiteSpace(
+                        toolName))
+                {
+                    continue;
+                }
+
+                var argumentsJson =
+                    "{}";
+
+                if (functionElement.TryGetProperty(
+                        "arguments",
+                        out var argumentsElement))
+                {
+                    argumentsJson =
+                        argumentsElement.ValueKind
+                            == JsonValueKind.String
+                            ? argumentsElement.GetString()
+                              ?? "{}"
+                            : argumentsElement.GetRawText();
+                }
+
+                var result =
+                    await _toolHost.ExecuteAsync(
+                        toolName,
+                        argumentsJson,
+                        cancellationToken);
+
+                messages.Add(
+                    new JsonObject
+                    {
+                        ["role"] = "tool",
+                        ["tool_name"] = toolName,
+                        ["content"] = result
+                    });
+            }
+        }
+
+        return CreateAssistantMessage(
+            "I stopped because I reached the tool-call safety limit. " +
+            "I may be going in circles, so I need your input.");
+    }
+
+    private async Task<JsonDocument> SendChatRequestAsync(
+        JsonArray messages,
+        CancellationToken cancellationToken)
+    {
+        var request =
+            new JsonObject
+            {
+                ["model"] = _model,
+
+                ["messages"] =
+                    messages.DeepClone(),
+
+                ["tools"] =
+                    _toolHost.CreateToolDefinitions(),
+
+                ["stream"] = false,
+
+                ["think"] = false,
+
+                ["keep_alive"] = "10m",
+
+                ["options"] =
+                    new JsonObject
+                    {
+                        ["temperature"] = 0.2,
+                        ["num_ctx"] = 8192
                     }
             };
-
-        var requestJson =
-            JsonSerializer.Serialize(request);
-
-        using var requestContent =
-            new StringContent(
-                requestJson,
-                Encoding.UTF8,
-                "application/json");
 
         HttpResponseMessage response;
 
         try
         {
             response =
-                await HttpClient.PostAsync(
+                await HttpClient.PostAsJsonAsync(
                     "/api/chat",
-                    requestContent,
+                    request,
                     cancellationToken);
         }
         catch (HttpRequestException exception)
         {
-            return CreateAssistantMessage(
-                "I couldn't connect to Ollama.\n\n" +
+            throw new InvalidOperationException(
+                "I couldn't connect to Ollama. " +
                 "Make sure Ollama is running and qwen3:8b is installed.\n\n" +
                 exception.Message);
-        }
-        catch (TaskCanceledException)
-        {
-            return CreateAssistantMessage(
-                "The local model took too long to respond.");
         }
 
         using (response)
         {
-            var responseJson =
+            var responseText =
                 await response.Content.ReadAsStringAsync(
                     cancellationToken);
 
             if (!response.IsSuccessStatusCode)
             {
-                return CreateAssistantMessage(
+                throw new InvalidOperationException(
                     $"Ollama returned HTTP {(int)response.StatusCode}.\n\n" +
-                    responseJson);
+                    responseText);
             }
 
-            try
-            {
-                using var document =
-                    JsonDocument.Parse(responseJson);
-
-                var root =
-                    document.RootElement;
-
-                if (!root.TryGetProperty(
-                        "message",
-                        out var messageElement))
-                {
-                    return CreateAssistantMessage(
-                        "Ollama responded, but I couldn't find a message in the response.");
-                }
-
-                if (!messageElement.TryGetProperty(
-                        "content",
-                        out var contentElement))
-                {
-                    return CreateAssistantMessage(
-                        "Ollama responded, but the message contained no text.");
-                }
-
-                var content =
-                    contentElement.GetString();
-
-                if (string.IsNullOrWhiteSpace(content))
-                {
-                    return CreateAssistantMessage(
-                        "Ollama returned an empty response.");
-                }
-
-                return CreateAssistantMessage(
-                    content.Trim());
-            }
-            catch (JsonException exception)
-            {
-                return CreateAssistantMessage(
-                    "Ollama returned a response I couldn't parse.\n\n" +
-                    exception.Message);
-            }
+            return JsonDocument.Parse(
+                responseText);
         }
     }
 
-    private List<OllamaMessage> BuildMessages(
+    private JsonArray BuildMessages(
         IReadOnlyList<ChatMessage> conversation)
     {
         var messages =
-            new List<OllamaMessage>
+            new JsonArray
             {
-                new()
+                new JsonObject
                 {
-                    Role = "system",
-                    Content = BuildSystemPrompt()
+                    ["role"] = "system",
+                    ["content"] = BuildSystemPrompt()
                 }
             };
 
@@ -162,14 +303,15 @@ public sealed class OllamaAgent : IAgent
             }
 
             messages.Add(
-                new OllamaMessage
+                new JsonObject
                 {
-                    Role =
+                    ["role"] =
                         message.Role == MessageRole.User
                             ? "user"
                             : "assistant",
 
-                    Content = message.Content
+                    ["content"] =
+                        message.Content
                 });
         }
 
@@ -190,43 +332,96 @@ public sealed class OllamaAgent : IAgent
 
             PERSONALITY
             Be calm, capable, friendly and slightly playful.
-            Be concise when the answer is simple.
-            Be detailed when the task requires it.
             Do not sound like a generic corporate chatbot.
+            For normal conversation, respond naturally.
+            For tasks, focus on accomplishing the task.
 
             PURPOSE
-            Seko is intended to become a general-purpose personal computer agent.
+            You are intended to become a general-purpose personal computer agent.
 
-            Over time you will be able to help with:
+            You will eventually help with:
             - software development
             - Unity and game development
-            - UX/UI and design
+            - UX/UI design
             - Blender and 3D workflows
             - web development
             - research
-            - travel planning
+            - travel
             - productivity
-            - computer automation
-            - voice interaction
+            - voice
             - visual understanding
-            - managing projects and workspaces
+            - computer automation
+            - managing projects
             - improving Seko itself
 
-            CURRENT LIMITATIONS
-            Right now you are in the conversational bootstrap stage.
-            You can talk and reason, but you do not yet have computer tools
-            attached to this agent.
+            CURRENT TOOLS
+            You now have tools for:
+            - listing files
+            - reading source files
+            - writing source files
+            - focused text replacement
+            - running dotnet build
+            - checking Git status
+            - inspecting Git diffs
 
-            Never pretend that you read a file, changed code, opened an
-            application, searched the web or performed an action unless a
-            real tool was available and actually performed that action.
+            You are inside an agent loop.
 
-            PRIVACY
-            Do not request passwords, private keys, API keys or credentials.
+            You may call tools multiple times before giving your final response.
 
-            Seko is local-first.
-            The current language model is running through Ollama rather than
-            a paid cloud AI API.
+            Never claim that you inspected, changed, built or checked something
+            unless the corresponding tool actually succeeded.
+
+            WORKSPACE SECURITY
+            Only use provided tools to access the active workspace.
+
+            Never attempt to escape the workspace.
+
+            Never seek:
+            - passwords
+            - API keys
+            - credentials
+            - private keys
+            - secret files
+
+            SELF-DEVELOPMENT
+            If the active workspace is Seko's own repository, you may modify your
+            own source code when Serkan explicitly asks you to implement, fix,
+            redesign or change something.
+
+            A normal discussion about an idea is NOT permission to edit files.
+
+            When changing code:
+            1. Check Git status.
+            2. Inspect the relevant files.
+            3. Understand the existing implementation.
+            4. Make the smallest sensible change.
+            5. Prefer replace_text for focused edits.
+            6. Use write_file for new files or deliberate full rewrites.
+            7. Inspect the result when useful.
+            8. Run build_project after C#, XAML or project-file changes.
+            9. If the build fails, inspect the compiler output and repair your change.
+            10. Do not endlessly retry.
+            11. Never claim the build succeeded unless build_project reports success.
+
+            GIT SAFETY
+            The host records whether Git was clean before your task began.
+
+            If uncommitted changes already existed before your task, modifications
+            are blocked so you cannot accidentally overwrite or commit Serkan's
+            unfinished work.
+
+            Files you modify through your tools are tracked.
+
+            After a successful code change and successful build, the host may create
+            a LOCAL Git commit containing only files you changed.
+
+            You must not push to GitHub automatically.
+
+            IMPORTANT
+            You may improve Seko when explicitly asked.
+
+            You may never silently expand your own permissions, disable safeguards,
+            access blocked files, or bypass capability restrictions.
             """;
     }
 
@@ -238,44 +433,5 @@ public sealed class OllamaAgent : IAgent
             Role = MessageRole.Assistant,
             Content = content
         };
-    }
-
-    private sealed class OllamaChatRequest
-    {
-        [JsonPropertyName("model")]
-        public required string Model { get; init; }
-
-        [JsonPropertyName("messages")]
-        public required List<OllamaMessage> Messages { get; init; }
-
-        [JsonPropertyName("stream")]
-        public bool Stream { get; init; }
-
-        [JsonPropertyName("think")]
-        public bool Think { get; init; }
-
-        [JsonPropertyName("keep_alive")]
-        public required string KeepAlive { get; init; }
-
-        [JsonPropertyName("options")]
-        public required OllamaOptions Options { get; init; }
-    }
-
-    private sealed class OllamaMessage
-    {
-        [JsonPropertyName("role")]
-        public required string Role { get; init; }
-
-        [JsonPropertyName("content")]
-        public required string Content { get; init; }
-    }
-
-    private sealed class OllamaOptions
-    {
-        [JsonPropertyName("temperature")]
-        public double Temperature { get; init; }
-
-        [JsonPropertyName("num_ctx")]
-        public int NumContext { get; init; }
     }
 }

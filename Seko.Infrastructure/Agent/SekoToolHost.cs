@@ -41,7 +41,6 @@ public sealed class SekoToolHost
 
     private readonly Workspace _workspace;
     private readonly string _workspaceRoot;
-    private readonly string _backupRoot;
 
     private readonly HashSet<string> _changedFiles =
         new(StringComparer.OrdinalIgnoreCase);
@@ -60,17 +59,6 @@ public sealed class SekoToolHost
         _workspaceRoot =
             Path.GetFullPath(
                 workspace.RootPath);
-
-        var localAppData =
-            Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData);
-
-        _backupRoot =
-            Path.Combine(
-                localAppData,
-                "Seko",
-                "Backups",
-                workspace.Id.ToString("N"));
     }
 
     public async Task BeginTaskAsync(
@@ -127,10 +115,11 @@ public sealed class SekoToolHost
         {
             CreateFunctionTool(
                 "list_files",
-                "List files and folders inside the active workspace.",
+                "List files and directories inside the active workspace.",
                 new JsonObject
                 {
                     ["type"] = "object",
+
                     ["properties"] =
                         new JsonObject
                         {
@@ -143,7 +132,7 @@ public sealed class SekoToolHost
                                 {
                                     ["type"] = "boolean",
                                     ["description"] =
-                                        "Whether to recursively list child folders."
+                                        "Whether child directories should be listed recursively."
                                 }
                         },
 
@@ -161,6 +150,7 @@ public sealed class SekoToolHost
                 new JsonObject
                 {
                     ["type"] = "object",
+
                     ["properties"] =
                         new JsonObject
                         {
@@ -178,10 +168,11 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "write_file",
-                "Create a new text/source file or completely replace an existing one. Existing files are backed up first.",
+                "Create a new source/text file or completely replace an existing file.",
                 new JsonObject
                 {
                     ["type"] = "object",
+
                     ["properties"] =
                         new JsonObject
                         {
@@ -191,7 +182,7 @@ public sealed class SekoToolHost
 
                             ["content"] =
                                 StringProperty(
-                                    "Complete contents of the new file.")
+                                    "The complete finished contents of the file.")
                         },
 
                     ["required"] =
@@ -204,10 +195,11 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "replace_text",
-                "Replace exactly one matching section in an existing source file. Prefer this for small edits.",
+                "Replace exactly one matching section of an existing source file. Prefer this for focused edits.",
                 new JsonObject
                 {
                     ["type"] = "object",
+
                     ["properties"] =
                         new JsonObject
                         {
@@ -217,7 +209,7 @@ public sealed class SekoToolHost
 
                             ["old_text"] =
                                 StringProperty(
-                                    "Exact existing text to replace. It must occur exactly once."),
+                                    "Exact existing text to replace. It must appear exactly once."),
 
                             ["new_text"] =
                                 StringProperty(
@@ -235,39 +227,18 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "build_project",
-                "Run dotnet build for the active .NET workspace and return compiler output.",
-                new JsonObject
-                {
-                    ["type"] = "object",
-                    ["properties"] =
-                        new JsonObject(),
-                    ["required"] =
-                        new JsonArray()
-                }),
+                "Run dotnet build for the active .NET workspace.",
+                EmptyParameters()),
 
             CreateFunctionTool(
                 "git_status",
                 "Inspect Git status for the active workspace.",
-                new JsonObject
-                {
-                    ["type"] = "object",
-                    ["properties"] =
-                        new JsonObject(),
-                    ["required"] =
-                        new JsonArray()
-                }),
+                EmptyParameters()),
 
             CreateFunctionTool(
                 "git_diff",
-                "Show the current Git diff.",
-                new JsonObject
-                {
-                    ["type"] = "object",
-                    ["properties"] =
-                        new JsonObject(),
-                    ["required"] =
-                        new JsonArray()
-                })
+                "Show the current Git diff for the active workspace.",
+                EmptyParameters())
         };
     }
 
@@ -290,9 +261,7 @@ public sealed class SekoToolHost
             return toolName switch
             {
                 "list_files" =>
-                    await ListFilesAsync(
-                        arguments,
-                        cancellationToken),
+                    ListFiles(arguments),
 
                 "read_file" =>
                     await ReadFileAsync(
@@ -351,7 +320,7 @@ public sealed class SekoToolHost
         if (!_baselineClean)
         {
             return
-                "Git: automatic commit skipped because the repository already had uncommitted changes before I started.";
+                "Git: automatic commit skipped because the repository already contained uncommitted changes before this task began.";
         }
 
         var requiresBuild =
@@ -366,17 +335,14 @@ public sealed class SekoToolHost
                 "Git: changes were not committed because a successful build has not been verified.";
         }
 
-        var existingFiles =
+        var filesToStage =
             _changedFiles
-                .Where(
-                    relativePath =>
-                        File.Exists(
-                            Path.Combine(
-                                _workspaceRoot,
-                                relativePath)))
+                .OrderBy(
+                    path => path,
+                    StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-        if (existingFiles.Count == 0)
+        if (filesToStage.Count == 0)
         {
             return null;
         }
@@ -389,7 +355,7 @@ public sealed class SekoToolHost
             };
 
         addArguments.AddRange(
-            existingFiles);
+            filesToStage);
 
         var addResult =
             await RunProcessAsync(
@@ -401,11 +367,11 @@ public sealed class SekoToolHost
         if (addResult.ExitCode != 0)
         {
             return
-                "Git: failed to stage Seko's changes.\n" +
+                "Git: staging failed.\n\n" +
                 addResult.Output;
         }
 
-        var stagedFiles =
+        var stagedDiff =
             await RunProcessAsync(
                 "git",
                 new[]
@@ -418,7 +384,7 @@ public sealed class SekoToolHost
                 cancellationToken);
 
         if (string.IsNullOrWhiteSpace(
-                stagedFiles.Output))
+                stagedDiff.Output))
         {
             return
                 "Git: there were no effective changes to commit.";
@@ -443,11 +409,11 @@ public sealed class SekoToolHost
         if (commitResult.ExitCode != 0)
         {
             return
-                "Git: changes were staged but the commit failed.\n" +
+                "Git: changes were staged, but the commit failed.\n\n" +
                 commitResult.Output;
         }
 
-        var hash =
+        var hashResult =
             await RunProcessAsync(
                 "git",
                 new[]
@@ -460,27 +426,21 @@ public sealed class SekoToolHost
                 cancellationToken);
 
         return
-            $"Git: committed automatically as " +
-            $"{hash.Output.Trim()} — {commitMessage}";
+            $"Git: committed locally as {hashResult.Output.Trim()} — {commitMessage}";
     }
 
-    private Task<string> ListFilesAsync(
-        JsonElement arguments,
-        CancellationToken cancellationToken)
+    private string ListFiles(
+        JsonElement arguments)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         var relativePath =
             GetString(
                 arguments,
                 "path");
 
         var recursive =
-            arguments.TryGetProperty(
-                "recursive",
-                out var recursiveElement)
-            && recursiveElement.ValueKind
-                == JsonValueKind.True;
+            GetBoolean(
+                arguments,
+                "recursive");
 
         var directory =
             ResolveSafePath(
@@ -489,8 +449,8 @@ public sealed class SekoToolHost
         if (!Directory.Exists(
                 directory))
         {
-            return Task.FromResult(
-                $"ERROR: Directory not found: {relativePath}");
+            return
+                $"ERROR: Directory not found: {relativePath}";
         }
 
         const int maximumEntries = 300;
@@ -498,65 +458,48 @@ public sealed class SekoToolHost
         var results =
             new List<string>();
 
-        var queue =
-            new Queue<string>();
+        var searchOption =
+            recursive
+                ? SearchOption.AllDirectories
+                : SearchOption.TopDirectoryOnly;
 
-        queue.Enqueue(
-            directory);
-
-        while (queue.Count > 0
-               && results.Count < maximumEntries)
+        foreach (
+            var childDirectory
+            in Directory.EnumerateDirectories(
+                directory,
+                "*",
+                searchOption))
         {
-            var current =
-                queue.Dequeue();
-
-            foreach (
-                var childDirectory
-                in Directory.EnumerateDirectories(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+            if (PathContainsIgnoredDirectory(
+                    childDirectory))
             {
-                var name =
-                    Path.GetFileName(
-                        childDirectory);
-
-                if (IgnoredDirectories.Contains(
-                        name))
-                {
-                    continue;
-                }
-
-                results.Add(
-                    "[DIR] " +
-                    ToRelativePath(
-                        childDirectory));
-
-                if (recursive)
-                {
-                    queue.Enqueue(
-                        childDirectory);
-                }
-
-                if (results.Count >= maximumEntries)
-                {
-                    break;
-                }
+                continue;
             }
+
+            results.Add(
+                "[DIR] " +
+                ToRelativePath(
+                    childDirectory));
 
             if (results.Count >= maximumEntries)
             {
                 break;
             }
+        }
 
+        if (results.Count < maximumEntries)
+        {
             foreach (
                 var file
-                in Directory.EnumerateFiles(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+                in Directory.EnumerateFiles(
+                    directory,
+                    "*",
+                    searchOption))
             {
-                if (IsSensitiveFile(file))
+                if (PathContainsIgnoredDirectory(
+                        file)
+                    || IsSensitiveFile(
+                        file))
                 {
                     continue;
                 }
@@ -571,23 +514,17 @@ public sealed class SekoToolHost
                     break;
                 }
             }
-
-            if (!recursive)
-            {
-                break;
-            }
         }
 
         if (results.Count == 0)
         {
-            return Task.FromResult(
-                "Directory is empty.");
+            return
+                "No accessible files found.";
         }
 
-        return Task.FromResult(
-            string.Join(
-                Environment.NewLine,
-                results));
+        return string.Join(
+            Environment.NewLine,
+            results);
     }
 
     private async Task<string> ReadFileAsync(
@@ -606,7 +543,8 @@ public sealed class SekoToolHost
         EnsureAllowedFile(
             fullPath);
 
-        if (!File.Exists(fullPath))
+        if (!File.Exists(
+                fullPath))
         {
             return
                 $"ERROR: File not found: {relativePath}";
@@ -628,7 +566,8 @@ public sealed class SekoToolHost
                 cancellationToken);
 
         return
-            $"FILE: {relativePath}\n\n{content}";
+            $"FILE: {NormalizeRelativePath(relativePath)}\n\n" +
+            content;
     }
 
     private async Task<string> WriteFileAsync(
@@ -660,13 +599,6 @@ public sealed class SekoToolHost
         EnsureAllowedFile(
             fullPath);
 
-        if (File.Exists(fullPath))
-        {
-            BackupFile(
-                fullPath,
-                relativePath);
-        }
-
         var directory =
             Path.GetDirectoryName(
                 fullPath);
@@ -684,15 +616,17 @@ public sealed class SekoToolHost
             new UTF8Encoding(false),
             cancellationToken);
 
-        var normalized =
+        var normalizedPath =
             NormalizeRelativePath(
-                relativePath);
+                Path.GetRelativePath(
+                    _workspaceRoot,
+                    fullPath));
 
         _changedFiles.Add(
-            normalized);
+            normalizedPath);
 
         return
-            $"Wrote {normalized}.";
+            $"Wrote {normalizedPath}.";
     }
 
     private async Task<string> ReplaceTextAsync(
@@ -716,6 +650,13 @@ public sealed class SekoToolHost
                 arguments,
                 "new_text");
 
+        if (string.IsNullOrEmpty(
+                oldText))
+        {
+            return
+                "ERROR: old_text cannot be empty.";
+        }
+
         var fullPath =
             ResolveSafePath(
                 relativePath);
@@ -723,7 +664,8 @@ public sealed class SekoToolHost
         EnsureAllowedFile(
             fullPath);
 
-        if (!File.Exists(fullPath))
+        if (!File.Exists(
+                fullPath))
         {
             return
                 $"ERROR: File not found: {relativePath}";
@@ -748,14 +690,10 @@ public sealed class SekoToolHost
         if (occurrences > 1)
         {
             return
-                $"ERROR: old_text occurs {occurrences} times. Use a more specific section.";
+                $"ERROR: old_text appears {occurrences} times. Use a more specific section.";
         }
 
-        BackupFile(
-            fullPath,
-            relativePath);
-
-        var newContent =
+        var updatedContent =
             content.Replace(
                 oldText,
                 newText,
@@ -763,19 +701,21 @@ public sealed class SekoToolHost
 
         await File.WriteAllTextAsync(
             fullPath,
-            newContent,
+            updatedContent,
             new UTF8Encoding(false),
             cancellationToken);
 
-        var normalized =
+        var normalizedPath =
             NormalizeRelativePath(
-                relativePath);
+                Path.GetRelativePath(
+                    _workspaceRoot,
+                    fullPath));
 
         _changedFiles.Add(
-            normalized);
+            normalizedPath);
 
         return
-            $"Updated {normalized}.";
+            $"Updated {normalizedPath}.";
     }
 
     private async Task<string> BuildProjectAsync(
@@ -790,7 +730,7 @@ public sealed class SekoToolHost
         if (target is null)
         {
             return
-                "ERROR: No .sln or .csproj file was found.";
+                "ERROR: No .sln or .csproj file was found in this workspace.";
         }
 
         var localAppData =
@@ -853,15 +793,15 @@ public sealed class SekoToolHost
                 _workspaceRoot,
                 cancellationToken);
 
-        var status =
+        var currentStatus =
             string.IsNullOrWhiteSpace(
                 result.Output)
                 ? "Working tree clean."
                 : result.Output;
 
         return
-            $"Repository clean when task began: {_baselineClean}\n\n" +
-            status;
+            $"Working tree was clean when this task began: {_baselineClean}\n\n" +
+            currentStatus;
     }
 
     private async Task<string> GetGitDiffAsync(
@@ -883,13 +823,16 @@ public sealed class SekoToolHost
                 _workspaceRoot,
                 cancellationToken);
 
-        return
-            string.IsNullOrWhiteSpace(
-                result.Output)
-                ? "No unstaged Git diff."
-                : TrimOutput(
-                    result.Output,
-                    30_000);
+        if (string.IsNullOrWhiteSpace(
+                result.Output))
+        {
+            return
+                "No unstaged Git diff.";
+        }
+
+        return TrimOutput(
+            result.Output,
+            30_000);
     }
 
     private void EnsureModificationAllowed()
@@ -898,8 +841,8 @@ public sealed class SekoToolHost
             && !_baselineClean)
         {
             throw new InvalidOperationException(
-                "This Git repository already had uncommitted changes before Seko started this task. " +
-                "For safety, Seko will not modify files until those changes are committed or reverted.");
+                "The Git repository already contained uncommitted changes before this task began. " +
+                "Seko will not modify files until those changes are committed or reverted.");
         }
     }
 
@@ -935,38 +878,23 @@ public sealed class SekoToolHost
             return fullPath;
         }
 
-        var prefix =
+        var rootPrefix =
             root +
             Path.DirectorySeparatorChar;
 
         if (!fullPath.StartsWith(
-                prefix,
+                rootPrefix,
                 StringComparison.OrdinalIgnoreCase))
         {
             throw new UnauthorizedAccessException(
                 "Path escapes the active workspace.");
         }
 
-        var relative =
-            Path.GetRelativePath(
-                root,
-                fullPath);
-
-        var parts =
-            relative.Split(
-                new[]
-                {
-                    Path.DirectorySeparatorChar,
-                    Path.AltDirectorySeparatorChar
-                },
-                StringSplitOptions.RemoveEmptyEntries);
-
-        if (parts.Any(
-                part =>
-                    IgnoredDirectories.Contains(part)))
+        if (PathContainsIgnoredDirectory(
+                fullPath))
         {
             throw new UnauthorizedAccessException(
-                "Direct access to generated or Git-internal directories is blocked.");
+                "Access to Git internals, build output and generated directories is blocked.");
         }
 
         return fullPath;
@@ -982,11 +910,11 @@ public sealed class SekoToolHost
                 "This file is treated as sensitive and cannot be accessed by Seko.");
         }
 
-        var name =
+        var fileName =
             Path.GetFileName(
                 fullPath);
 
-        if (name.Equals(
+        if (fileName.Equals(
                 ".gitignore",
                 StringComparison.OrdinalIgnoreCase))
         {
@@ -1001,14 +929,14 @@ public sealed class SekoToolHost
                 extension))
         {
             throw new InvalidOperationException(
-                $"File type '{extension}' is not enabled yet.");
+                $"File type '{extension}' is not enabled for Seko yet.");
         }
     }
 
     private static bool IsSensitiveFile(
         string fullPath)
     {
-        var name =
+        var fileName =
             Path.GetFileName(
                 fullPath);
 
@@ -1017,20 +945,24 @@ public sealed class SekoToolHost
                 fullPath);
 
         return
-            name.Equals(
+            fileName.Equals(
                 ".env",
                 StringComparison.OrdinalIgnoreCase)
 
-            || name.StartsWith(
+            || fileName.StartsWith(
                 ".env.",
                 StringComparison.OrdinalIgnoreCase)
 
-            || name.Equals(
+            || fileName.Equals(
                 "secrets.json",
                 StringComparison.OrdinalIgnoreCase)
 
-            || name.Equals(
+            || fileName.Equals(
                 "credentials.json",
+                StringComparison.OrdinalIgnoreCase)
+
+            || fileName.Equals(
+                "appsettings.Local.json",
                 StringComparison.OrdinalIgnoreCase)
 
             || extension.Equals(
@@ -1048,43 +980,6 @@ public sealed class SekoToolHost
             || extension.Equals(
                 ".key",
                 StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void BackupFile(
-        string fullPath,
-        string relativePath)
-    {
-        if (!File.Exists(
-                fullPath))
-        {
-            return;
-        }
-
-        var timestamp =
-            DateTime.Now.ToString(
-                "yyyyMMdd-HHmmssfff");
-
-        var backupPath =
-            Path.Combine(
-                _backupRoot,
-                timestamp,
-                relativePath);
-
-        var backupDirectory =
-            Path.GetDirectoryName(
-                backupPath);
-
-        if (!string.IsNullOrWhiteSpace(
-                backupDirectory))
-        {
-            Directory.CreateDirectory(
-                backupDirectory);
-        }
-
-        File.Copy(
-            fullPath,
-            backupPath,
-            true);
     }
 
     private string? FindBuildTarget()
@@ -1113,6 +1008,15 @@ public sealed class SekoToolHost
                         path));
     }
 
+    private string ToRelativePath(
+        string fullPath)
+    {
+        return NormalizeRelativePath(
+            Path.GetRelativePath(
+                _workspaceRoot,
+                fullPath));
+    }
+
     private static bool PathContainsIgnoredDirectory(
         string path)
     {
@@ -1131,15 +1035,6 @@ public sealed class SekoToolHost
                     part));
     }
 
-    private string ToRelativePath(
-        string fullPath)
-    {
-        return NormalizeRelativePath(
-            Path.GetRelativePath(
-                _workspaceRoot,
-                fullPath));
-    }
-
     private static string NormalizeRelativePath(
         string path)
     {
@@ -1150,32 +1045,51 @@ public sealed class SekoToolHost
 
     private static string GetString(
         JsonElement arguments,
-        string property)
+        string propertyName)
     {
         if (!arguments.TryGetProperty(
-                property,
+                propertyName,
                 out var element)
-            || element.ValueKind
-                != JsonValueKind.String)
+            || element.ValueKind != JsonValueKind.String)
         {
             throw new ArgumentException(
-                $"Missing string argument '{property}'.");
+                $"Missing string argument '{propertyName}'.");
         }
 
         return element.GetString()
                ?? string.Empty;
     }
 
+    private static bool GetBoolean(
+        JsonElement arguments,
+        string propertyName)
+    {
+        if (!arguments.TryGetProperty(
+                propertyName,
+                out var element))
+        {
+            throw new ArgumentException(
+                $"Missing boolean argument '{propertyName}'.");
+        }
+
+        if (element.ValueKind == JsonValueKind.True)
+        {
+            return true;
+        }
+
+        if (element.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        throw new ArgumentException(
+            $"Argument '{propertyName}' must be true or false.");
+    }
+
     private static int CountOccurrences(
         string text,
         string value)
     {
-        if (string.IsNullOrEmpty(
-                value))
-        {
-            return 0;
-        }
-
         var count = 0;
         var index = 0;
 
@@ -1193,9 +1107,7 @@ public sealed class SekoToolHost
             }
 
             count++;
-
-            index +=
-                value.Length;
+            index += value.Length;
         }
     }
 
@@ -1206,36 +1118,37 @@ public sealed class SekoToolHost
             Path.GetExtension(
                 relativePath);
 
-        return extension.Equals(
-                   ".cs",
-                   StringComparison.OrdinalIgnoreCase)
+        return
+            extension.Equals(
+                ".cs",
+                StringComparison.OrdinalIgnoreCase)
 
-               || extension.Equals(
-                   ".xaml",
-                   StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(
+                ".xaml",
+                StringComparison.OrdinalIgnoreCase)
 
-               || extension.Equals(
-                   ".csproj",
-                   StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(
+                ".csproj",
+                StringComparison.OrdinalIgnoreCase)
 
-               || extension.Equals(
-                   ".sln",
-                   StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(
+                ".sln",
+                StringComparison.OrdinalIgnoreCase)
 
-               || extension.Equals(
-                   ".props",
-                   StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(
+                ".props",
+                StringComparison.OrdinalIgnoreCase)
 
-               || extension.Equals(
-                   ".targets",
-                   StringComparison.OrdinalIgnoreCase);
+            || extension.Equals(
+                ".targets",
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static string CreateCommitMessage(
-        string request)
+        string userRequest)
     {
         var firstLine =
-            request
+            userRequest
                 .Split(
                     new[]
                     {
@@ -1252,11 +1165,10 @@ public sealed class SekoToolHost
                 "\"",
                 string.Empty);
 
-        if (firstLine.Length > 58)
+        if (firstLine.Length > 60)
         {
             firstLine =
-                firstLine[..58]
-                .TrimEnd()
+                firstLine[..60].TrimEnd()
                 + "...";
         }
 
@@ -1274,14 +1186,21 @@ public sealed class SekoToolHost
         };
     }
 
+    private static JsonObject EmptyParameters()
+    {
+        return new JsonObject
+        {
+            ["type"] = "object",
+            ["properties"] = new JsonObject(),
+            ["required"] = new JsonArray()
+        };
+    }
+
     private static JsonObject CreateFunctionTool(
         string name,
         string description,
         JsonObject parameters)
     {
-        parameters["additionalProperties"] =
-            false;
-
         return new JsonObject
         {
             ["type"] = "function",
@@ -1331,15 +1250,16 @@ public sealed class SekoToolHost
             process.Start();
 
             var outputTask =
-                process.StandardOutput.ReadToEndAsync();
+                process.StandardOutput.ReadToEndAsync(
+                    cancellationToken);
 
             var errorTask =
-                process.StandardError.ReadToEndAsync();
+                process.StandardError.ReadToEndAsync(
+                    cancellationToken);
 
             using var timeoutSource =
-                CancellationTokenSource
-                    .CreateLinkedTokenSource(
-                        cancellationToken);
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
 
             timeoutSource.CancelAfter(
                 timeout
@@ -1380,7 +1300,7 @@ public sealed class SekoToolHost
                     error))
             {
                 combined +=
-                    "\n" +
+                    Environment.NewLine +
                     error;
             }
 
@@ -1397,17 +1317,19 @@ public sealed class SekoToolHost
     }
 
     private static string TrimOutput(
-        string value,
+        string output,
         int maximumLength)
     {
-        if (value.Length <= maximumLength)
+        if (output.Length <= maximumLength)
         {
-            return value;
+            return output;
         }
 
         return
-            value[..maximumLength]
-            + "\n\n[Output truncated]";
+            output[..maximumLength]
+            + Environment.NewLine
+            + Environment.NewLine
+            + "[Output truncated]";
     }
 
     private sealed record ProcessResult(
