@@ -418,7 +418,7 @@
                                 Foreground="{StaticResource TextMutedBrush}"
                                 Visibility="Visible"
                                 />
-                            <TextBlock Text="v0.1"
+                            <TextBlock Text="v0.1.1"
                                        FontSize="11"
                                        Foreground="{StaticResource TextMutedBrush}"
                                        Margin="0,2,0,0"/>
