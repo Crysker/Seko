@@ -375,6 +375,48 @@ public sealed class SekoToolHost
                 }),
 
             CreateFunctionTool(
+                "read_task_log",
+                """
+                Read one of Seko's own finished diagnostic task logs from the real
+                Windows LocalApplicationData\Seko\Logs\Tasks directory.
+
+                Use selection 'latest' for the newest finished task.
+                Use selection 'latest_unsuccessful' for the newest failed,
+                incomplete or stopped task.
+
+                This tool is read-only and cannot access arbitrary paths.
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["selection"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "string",
+
+                                    ["description"] =
+                                        "Which finished task log to read.",
+
+                                    ["enum"] =
+                                        new JsonArray
+                                        {
+                                            "latest",
+                                            "latest_unsuccessful"
+                                        }
+                                }
+                        },
+
+                    ["required"] =
+                        new JsonArray()
+                }),
+
+            CreateFunctionTool(
                 "write_file",
                 "Create a new source/text file or deliberately replace an entire existing file. New .cs and .xaml files must be created inside a real .NET project root discovered from the active solution/project structure.",
                 new JsonObject
@@ -503,6 +545,11 @@ public sealed class SekoToolHost
 
                 "read_file" =>
                     await ReadFileAsync(
+                        arguments,
+                        cancellationToken),
+
+                "read_task_log" =>
+                    await ReadTaskLogAsync(
                         arguments,
                         cancellationToken),
 
@@ -1373,6 +1420,160 @@ public sealed class SekoToolHost
         return
             $"FILE: {NormalizeRelativePath(relativePath)}\n\n" +
             content;
+    }
+
+    private static async Task<string> ReadTaskLogAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var selection =
+            "latest";
+
+        if (arguments.TryGetProperty(
+                "selection",
+                out var selectionElement)
+            && selectionElement.ValueKind
+                == JsonValueKind.String)
+        {
+            selection =
+                selectionElement.GetString()
+                    ?.Trim()
+                    .ToLowerInvariant()
+                ?? "latest";
+        }
+
+        if (!string.Equals(
+                selection,
+                "latest",
+                StringComparison.Ordinal)
+            && !string.Equals(
+                selection,
+                "latest_unsuccessful",
+                StringComparison.Ordinal))
+        {
+            return
+                "ERROR: selection must be 'latest' or 'latest_unsuccessful'.";
+        }
+
+        var localAppData =
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData);
+
+        var logDirectory =
+            Path.Combine(
+                localAppData,
+                "Seko",
+                "Logs",
+                "Tasks");
+
+        if (!Directory.Exists(
+                logDirectory))
+        {
+            return
+                "No Seko task log directory exists yet.";
+        }
+
+        List<FileInfo> logFiles;
+
+        try
+        {
+            logFiles =
+                new DirectoryInfo(
+                    logDirectory)
+                    .EnumerateFiles(
+                        "*.md",
+                        SearchOption.TopDirectoryOnly)
+                    .OrderByDescending(
+                        file => file.LastWriteTimeUtc)
+                    .ToList();
+        }
+        catch (Exception exception)
+        {
+            return
+                "ERROR: Could not enumerate Seko task logs: " +
+                exception.Message;
+        }
+
+        if (logFiles.Count == 0)
+        {
+            return
+                "No Seko task logs were found.";
+        }
+
+        foreach (var logFile
+                 in logFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (logFile.Length
+                > 500_000)
+            {
+                continue;
+            }
+
+            string content;
+
+            try
+            {
+                content =
+                    await File.ReadAllTextAsync(
+                        logFile.FullName,
+                        cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            /*
+                Starting a new Seko request creates its own Running log before
+                tools execute. Skip that current log so "latest" means the
+                newest task that actually finished before this request.
+            */
+            if (content.Contains(
+                    "Status: **Running**",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (selection
+                    == "latest_unsuccessful"
+                && !IsUnsuccessfulTaskLog(
+                    content))
+            {
+                continue;
+            }
+
+            return
+                $"TASK LOG FILE: {logFile.Name}\n" +
+                $"SELECTION: {selection}\n\n" +
+                TrimOutput(
+                    content,
+                    80_000);
+        }
+
+        return selection
+            == "latest_unsuccessful"
+                ? "No finished failed, incomplete or stopped Seko task log was found."
+                : "No finished Seko task log was found.";
+    }
+
+    private static bool IsUnsuccessfulTaskLog(
+        string content)
+    {
+        return
+            content.Contains(
+                "Status: **Failed**",
+                StringComparison.OrdinalIgnoreCase)
+
+            || content.Contains(
+                "Status: **Incomplete**",
+                StringComparison.OrdinalIgnoreCase)
+
+            || content.Contains(
+                "Status: **Stopped**",
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<string> WriteFileAsync(
