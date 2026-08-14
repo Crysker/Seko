@@ -4,6 +4,8 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Seko.Core.Workspaces;
 using Seko.Infrastructure.Agent.Build;
+using Seko.Infrastructure.Agent.Capabilities;
+using Seko.Infrastructure.Agent.Capabilities.BuiltIn;
 using Seko.Infrastructure.Agent.Git;
 using Seko.Infrastructure.Agent.Safety;
 using Seko.Infrastructure.Agent.Tools;
@@ -77,6 +79,7 @@ public sealed class SekoToolHost
     private readonly GitService _gitService;
     private readonly WorkspacePathGuard _pathGuard;
     private readonly SekoToolRegistry _toolRegistry;
+    private readonly SekoCapabilityRegistry _capabilityRegistry;
     private readonly string _workspaceRoot;
 
     private readonly HashSet<string> _changedFiles =
@@ -115,7 +118,11 @@ public sealed class SekoToolHost
                 _workspaceRoot);
 
         _toolRegistry =
-            CreateToolRegistry();
+            new SekoToolRegistry();
+
+        _capabilityRegistry =
+            CreateCapabilityRegistry(
+                _toolRegistry);
     }
 
     public async Task BeginTaskAsync(
@@ -503,66 +510,46 @@ public sealed class SekoToolHost
                 cancellationToken);
     }
 
-    private SekoToolRegistry CreateToolRegistry()
+    private SekoCapabilityRegistry CreateCapabilityRegistry(
+        SekoToolRegistry toolRegistry)
     {
         var registry =
-            new SekoToolRegistry();
+            new SekoCapabilityRegistry();
 
         registry.Register(
-            "search_workspace",
-            SearchWorkspaceAsync);
+            new WorkspaceCapability(
+                SearchWorkspaceAsync,
+                (arguments, _) =>
+                    Task.FromResult(
+                        FindFiles(
+                            arguments)),
+                FindTextAsync,
+                (arguments, _) =>
+                    Task.FromResult(
+                        ListFiles(
+                            arguments)),
+                ReadFileAsync,
+                ReadTaskLogAsync,
+                WriteFileAsync,
+                ReplaceTextAsync),
+            toolRegistry);
 
         registry.Register(
-            "find_files",
-            (arguments, _) =>
-                Task.FromResult(
-                    FindFiles(
-                        arguments)));
+            new BuildCapability(
+                (_, cancellationToken) =>
+                    BuildProjectAsync(
+                        cancellationToken)),
+            toolRegistry);
 
         registry.Register(
-            "find_text",
-            FindTextAsync);
-
-        registry.Register(
-            "list_files",
-            (arguments, _) =>
-                Task.FromResult(
-                    ListFiles(
-                        arguments)));
-
-        registry.Register(
-            "read_file",
-            ReadFileAsync);
-
-        registry.Register(
-            "read_task_log",
-            ReadTaskLogAsync);
-
-        registry.Register(
-            "write_file",
-            WriteFileAsync);
-
-        registry.Register(
-            "replace_text",
-            ReplaceTextAsync);
-
-        registry.Register(
-            "build_project",
-            (_, cancellationToken) =>
-                BuildProjectAsync(
-                    cancellationToken));
-
-        registry.Register(
-            "git_status",
-            (_, cancellationToken) =>
-                GetGitStatusAsync(
-                    cancellationToken));
-
-        registry.Register(
-            "git_diff",
-            (_, cancellationToken) =>
-                GetGitDiffAsync(
-                    cancellationToken));
+            new GitCapability(
+                (_, cancellationToken) =>
+                    GetGitStatusAsync(
+                        cancellationToken),
+                (_, cancellationToken) =>
+                    GetGitDiffAsync(
+                        cancellationToken)),
+            toolRegistry);
 
         return registry;
     }
