@@ -906,11 +906,32 @@ public sealed class OllamaAgent :
             - find_text
             - list_files
             - read_file
+            - read_task_log
             - write_file
             - replace_text
             - build_project
             - git_status
             - git_diff
+
+            DIAGNOSTIC TASK LOGS
+            You can read your own finished diagnostic task logs with
+            read_task_log.
+
+            For requests such as:
+            - "read your latest task log"
+            - "inspect your previous task"
+            - "why did your last task fail?"
+            - "what went wrong?"
+            - "diagnose your previous task"
+
+            use read_task_log before making claims about the previous task.
+
+            Use selection "latest" for the newest finished task.
+            Use selection "latest_unsuccessful" when diagnosing a failed,
+            incomplete or stopped task.
+
+            Do not treat a clean Git working tree as evidence that a previous
+            task succeeded. A clean tree may simply mean rollback worked.
 
             TOOL SELECTION
             Use as few tool calls as necessary, but do not guess.
@@ -1116,6 +1137,22 @@ public sealed class OllamaAgent :
                 "rebuild"
             };
 
+        var diagnosticPhrases =
+            new[]
+            {
+                "diagnose",
+                "what went wrong",
+                "task log",
+                "latest log",
+                "previous task",
+                "last task",
+                "failed task",
+                "task failed",
+                "task failure",
+                "why did your last task",
+                "why did the last task"
+            };
+
         var workspaceWords =
             new[]
             {
@@ -1176,6 +1213,10 @@ public sealed class OllamaAgent :
             buildWords.Any(
                 normalized.Contains);
 
+        var hasDiagnosticIntent =
+            diagnosticPhrases.Any(
+                normalized.Contains);
+
         var hasWorkspaceTarget =
             workspaceWords.Any(
                 normalized.Contains);
@@ -1185,10 +1226,11 @@ public sealed class OllamaAgent :
             && hasWorkspaceTarget;
 
         var requiresWorkspaceTools =
-            hasWorkspaceTarget
-            && (hasMutation
-                || hasInspection
-                || explicitBuildRequested);
+            hasDiagnosticIntent
+            || (hasWorkspaceTarget
+                && (hasMutation
+                    || hasInspection
+                    || explicitBuildRequested));
 
         /*
             A direct self-development phrase should also count even when the
@@ -1518,6 +1560,9 @@ public sealed class OllamaAgent :
             "read_file" =>
                 "Act on the file contents already available. Edit when the target is known, build when verification is needed, or finish when the task is already complete.",
 
+            "read_task_log" =>
+                "The requested task log is already available in the previous result. Diagnose or summarize that evidence now instead of reading the same log again.",
+
             "git_status" =>
                 "The Git state is already known. Do not re-check it unchanged. Continue with discovery, inspection, editing, building, or finish the task.",
 
@@ -1722,6 +1767,9 @@ public sealed class OllamaAgent :
                     query)
                     ? "Searching workspace..."
                     : $"Searching workspace for {Shorten(query, 60)}...",
+
+            "read_task_log" =>
+                "Reading previous task log...",
 
             "git_status" =>
                 "Checking Git status...",
