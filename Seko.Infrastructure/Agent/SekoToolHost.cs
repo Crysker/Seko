@@ -6,6 +6,7 @@ using Seko.Core.Workspaces;
 using Seko.Infrastructure.Agent.Build;
 using Seko.Infrastructure.Agent.Git;
 using Seko.Infrastructure.Agent.Safety;
+using Seko.Infrastructure.Agent.Tools;
 
 namespace Seko.Infrastructure.Agent;
 
@@ -75,6 +76,7 @@ public sealed class SekoToolHost
     private readonly BuildService _buildService;
     private readonly GitService _gitService;
     private readonly WorkspacePathGuard _pathGuard;
+    private readonly SekoToolRegistry _toolRegistry;
     private readonly string _workspaceRoot;
 
     private readonly HashSet<string> _changedFiles =
@@ -111,6 +113,9 @@ public sealed class SekoToolHost
         _gitService =
             new GitService(
                 _workspaceRoot);
+
+        _toolRegistry =
+            CreateToolRegistry();
     }
 
     public async Task BeginTaskAsync(
@@ -486,91 +491,81 @@ public sealed class SekoToolHost
         };
     }
 
-    public async Task<string> ExecuteAsync(
+    public Task<string> ExecuteAsync(
         string toolName,
         string argumentsJson,
         CancellationToken cancellationToken = default)
     {
-        try
-        {
-            using var document =
-                JsonDocument.Parse(
-                    string.IsNullOrWhiteSpace(
-                        argumentsJson)
-                        ? "{}"
-                        : argumentsJson);
-
-            var arguments =
-                document.RootElement;
-
-            return toolName switch
-            {
-                "search_workspace" =>
-                    await SearchWorkspaceAsync(
-                        arguments,
-                        cancellationToken),
-
-                "find_files" =>
-                    FindFiles(
-                        arguments),
-
-                "find_text" =>
-                    await FindTextAsync(
-                        arguments,
-                        cancellationToken),
-
-                "list_files" =>
-                    ListFiles(
-                        arguments),
-
-                "read_file" =>
-                    await ReadFileAsync(
-                        arguments,
-                        cancellationToken),
-
-                "read_task_log" =>
-                    await ReadTaskLogAsync(
-                        arguments,
-                        cancellationToken),
-
-                "write_file" =>
-                    await WriteFileAsync(
-                        arguments,
-                        cancellationToken),
-
-                "replace_text" =>
-                    await ReplaceTextAsync(
-                        arguments,
-                        cancellationToken),
-
-                "build_project" =>
-                    await BuildProjectAsync(
-                        cancellationToken),
-
-                "git_status" =>
-                    await GetGitStatusAsync(
-                        cancellationToken),
-
-                "git_diff" =>
-                    await GetGitDiffAsync(
-                        cancellationToken),
-
-                _ =>
-                    $"ERROR: Unknown tool '{toolName}'."
-            };
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            return
-                $"ERROR: {exception.GetType().Name}: " +
-                exception.Message;
-        }
+        return
+            _toolRegistry.ExecuteAsync(
+                toolName,
+                argumentsJson,
+                cancellationToken);
     }
 
+    private SekoToolRegistry CreateToolRegistry()
+    {
+        var registry =
+            new SekoToolRegistry();
+
+        registry.Register(
+            "search_workspace",
+            SearchWorkspaceAsync);
+
+        registry.Register(
+            "find_files",
+            (arguments, _) =>
+                Task.FromResult(
+                    FindFiles(
+                        arguments)));
+
+        registry.Register(
+            "find_text",
+            FindTextAsync);
+
+        registry.Register(
+            "list_files",
+            (arguments, _) =>
+                Task.FromResult(
+                    ListFiles(
+                        arguments)));
+
+        registry.Register(
+            "read_file",
+            ReadFileAsync);
+
+        registry.Register(
+            "read_task_log",
+            ReadTaskLogAsync);
+
+        registry.Register(
+            "write_file",
+            WriteFileAsync);
+
+        registry.Register(
+            "replace_text",
+            ReplaceTextAsync);
+
+        registry.Register(
+            "build_project",
+            (_, cancellationToken) =>
+                BuildProjectAsync(
+                    cancellationToken));
+
+        registry.Register(
+            "git_status",
+            (_, cancellationToken) =>
+                GetGitStatusAsync(
+                    cancellationToken));
+
+        registry.Register(
+            "git_diff",
+            (_, cancellationToken) =>
+                GetGitDiffAsync(
+                    cancellationToken));
+
+        return registry;
+    }
     public async Task<string?> TryAutoCommitAsync(
         string userRequest,
         CancellationToken cancellationToken = default)
