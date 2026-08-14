@@ -1,6 +1,6 @@
-using System.Text.Json;
 using Seko.Infrastructure.Agent.Capabilities;
 using Seko.Infrastructure.Agent.Capabilities.BuiltIn;
+using Seko.Infrastructure.Agent.Permissions;
 using Seko.Infrastructure.Agent.Tools;
 
 namespace Seko.Tests.Agent;
@@ -8,7 +8,7 @@ namespace Seko.Tests.Agent;
 public sealed class CapabilityRegistryRegressionTests
 {
     [Fact]
-    public void Register_AddsCapabilityAndItsTools()
+    public void Register_AddsAllowedCapabilityAndItsTools()
     {
         var toolRegistry =
             new SekoToolRegistry();
@@ -23,12 +23,20 @@ public sealed class CapabilityRegistryRegressionTests
                 {
                     "example.read"
                 },
+                Array.Empty<string>(),
                 Tool(
                     "example_tool"));
 
-        capabilityRegistry.Register(
-            capability,
-            toolRegistry);
+        var state =
+            capabilityRegistry.Register(
+                capability,
+                CapabilitySource.Extension,
+                AllowPolicy(),
+                toolRegistry);
+
+        Assert.Equal(
+            CapabilityActivationState.Active,
+            state);
 
         Assert.Same(
             capability,
@@ -56,6 +64,8 @@ public sealed class CapabilityRegistryRegressionTests
                 {
                     "first"
                 }),
+            CapabilitySource.Extension,
+            AllowPolicy(),
             toolRegistry);
 
         var exception =
@@ -68,6 +78,8 @@ public sealed class CapabilityRegistryRegressionTests
                             {
                                 "second"
                             }),
+                        CapabilitySource.Extension,
+                        AllowPolicy(),
                         toolRegistry));
 
         Assert.Contains(
@@ -76,7 +88,7 @@ public sealed class CapabilityRegistryRegressionTests
     }
 
     [Fact]
-    public void Register_ToolConflictIsRejectedBeforeCapabilityIsAdded()
+    public void Register_ActiveToolConflictIsRejectedBeforeCapabilityIsAdded()
     {
         var toolRegistry =
             new SekoToolRegistry();
@@ -98,8 +110,11 @@ public sealed class CapabilityRegistryRegressionTests
                             {
                                 "conflict.test"
                             },
+                            Array.Empty<string>(),
                             Tool(
                                 "shared_tool")),
+                        CapabilitySource.Extension,
+                        AllowPolicy(),
                         toolRegistry));
 
         Assert.Contains(
@@ -127,6 +142,8 @@ public sealed class CapabilityRegistryRegressionTests
                 {
                     "design.edit"
                 }),
+            CapabilitySource.Extension,
+            AllowPolicy(),
             toolRegistry);
 
         Assert.True(
@@ -139,7 +156,7 @@ public sealed class CapabilityRegistryRegressionTests
     }
 
     [Fact]
-    public void GetProviders_ReturnsMultipleProvidersForSameAbility()
+    public void GetProviders_ReturnsMultipleActiveProvidersForSameAbility()
     {
         var toolRegistry =
             new SekoToolRegistry();
@@ -165,10 +182,14 @@ public sealed class CapabilityRegistryRegressionTests
 
         capabilityRegistry.Register(
             first,
+            CapabilitySource.Extension,
+            AllowPolicy(),
             toolRegistry);
 
         capabilityRegistry.Register(
             second,
+            CapabilitySource.Extension,
+            AllowPolicy(),
             toolRegistry);
 
         var providers =
@@ -269,7 +290,7 @@ public sealed class CapabilityRegistryRegressionTests
     }
 
     [Fact]
-    public async Task RegisteredCapabilityTool_ExecutesThroughToolRegistry()
+    public async Task RegisteredAllowedCapabilityTool_ExecutesThroughToolRegistry()
     {
         var toolRegistry =
             new SekoToolRegistry();
@@ -284,6 +305,7 @@ public sealed class CapabilityRegistryRegressionTests
                 {
                     "example.echo"
                 },
+                Array.Empty<string>(),
                 new SekoToolRegistration(
                     "echo",
                     (arguments, _) =>
@@ -293,6 +315,8 @@ public sealed class CapabilityRegistryRegressionTests
                                     "value")
                                 .GetString()
                             ?? string.Empty))),
+            CapabilitySource.Extension,
+            AllowPolicy(),
             toolRegistry);
 
         var result =
@@ -309,9 +333,191 @@ public sealed class CapabilityRegistryRegressionTests
             result);
     }
 
+    [Fact]
+    public void PendingCapability_IsKnownButDoesNotExposeToolsOrActiveAbility()
+    {
+        var toolRegistry =
+            new SekoToolRegistry();
+
+        var capabilityRegistry =
+            new SekoCapabilityRegistry();
+
+        var capability =
+            CreateCapability(
+                "future-design",
+                new[]
+                {
+                    "design.edit"
+                },
+                new[]
+                {
+                    "network"
+                },
+                Tool(
+                    "future_design_edit"));
+
+        var state =
+            capabilityRegistry.Register(
+                capability,
+                CapabilitySource.Extension,
+                SekoPermissionPolicy.CreateDefault(),
+                toolRegistry);
+
+        Assert.Equal(
+            CapabilityActivationState.PendingApproval,
+            state);
+
+        Assert.True(
+            capabilityRegistry.KnowsAbility(
+                "design.edit"));
+
+        Assert.False(
+            capabilityRegistry.Supports(
+                "design.edit"));
+
+        Assert.Contains(
+            capability,
+            capabilityRegistry.GetKnownProviders(
+                "design.edit"));
+
+        Assert.DoesNotContain(
+            "future_design_edit",
+            toolRegistry.ToolNames);
+    }
+
+    [Fact]
+    public void DeniedCapability_IsKnownButInactive()
+    {
+        var toolRegistry =
+            new SekoToolRegistry();
+
+        var capabilityRegistry =
+            new SekoCapabilityRegistry();
+
+        var capability =
+            CreateCapability(
+                "unsafe",
+                new[]
+                {
+                    "kernel.change"
+                },
+                new[]
+                {
+                    "self.modify.kernel"
+                },
+                Tool(
+                    "unsafe_change"));
+
+        var state =
+            capabilityRegistry.Register(
+                capability,
+                CapabilitySource.BuiltIn,
+                SekoPermissionPolicy.CreateDefault(),
+                toolRegistry);
+
+        Assert.Equal(
+            CapabilityActivationState.Denied,
+            state);
+
+        Assert.Equal(
+            CapabilityActivationState.Denied,
+            capabilityRegistry.GetState(
+                "unsafe"));
+
+        Assert.False(
+            capabilityRegistry.Supports(
+                "kernel.change"));
+
+        Assert.DoesNotContain(
+            "unsafe_change",
+            toolRegistry.ToolNames);
+    }
+
+    [Fact]
+    public void BuiltInCapability_IsAllowedByDefaultPolicy()
+    {
+        var toolRegistry =
+            new SekoToolRegistry();
+
+        var capabilityRegistry =
+            new SekoCapabilityRegistry();
+
+        var capability =
+            CreateCapability(
+                "trusted-built-in",
+                new[]
+                {
+                    "example.trusted"
+                },
+                new[]
+                {
+                    "network",
+                    "process.execute:anything"
+                },
+                Tool(
+                    "trusted_tool"));
+
+        var state =
+            capabilityRegistry.Register(
+                capability,
+                CapabilitySource.BuiltIn,
+                SekoPermissionPolicy.CreateDefault(),
+                toolRegistry);
+
+        Assert.Equal(
+            CapabilityActivationState.Active,
+            state);
+
+        Assert.Contains(
+            "trusted_tool",
+            toolRegistry.ToolNames);
+    }
+
+    [Fact]
+    public void PermissionEvaluation_IsStoredForCapability()
+    {
+        var toolRegistry =
+            new SekoToolRegistry();
+
+        var capabilityRegistry =
+            new SekoCapabilityRegistry();
+
+        capabilityRegistry.Register(
+            CreateCapability(
+                "permission-test",
+                new[]
+                {
+                    "example"
+                },
+                new[]
+                {
+                    "network"
+                }),
+            CapabilitySource.Extension,
+            SekoPermissionPolicy.CreateDefault(),
+            toolRegistry);
+
+        var evaluation =
+            capabilityRegistry.GetPermissionEvaluation(
+                "permission-test");
+
+        Assert.NotNull(
+            evaluation);
+
+        Assert.Equal(
+            PermissionDecision.Ask,
+            evaluation.OverallDecision);
+
+        Assert.Equal(
+            PermissionDecision.Ask,
+            evaluation.GetDecision(
+                "network"));
+    }
+
     private static ISekoCapability CreateCapability(
         string id,
         IEnumerable<string> abilities,
+        IEnumerable<string>? permissions = null,
         params SekoToolRegistration[] tools)
     {
         return
@@ -320,7 +526,8 @@ public sealed class CapabilityRegistryRegressionTests
                     id,
                     id,
                     string.Empty,
-                    abilities),
+                    abilities,
+                    permissions),
                 tools);
     }
 
@@ -339,6 +546,14 @@ public sealed class CapabilityRegistryRegressionTests
             (_, _) =>
                 Task.FromResult(
                     "ok");
+    }
+
+    private static SekoPermissionPolicy AllowPolicy()
+    {
+        return
+            new SekoPermissionPolicy(
+                defaultDecision:
+                    PermissionDecision.Allow);
     }
 
     private sealed class TestCapability :

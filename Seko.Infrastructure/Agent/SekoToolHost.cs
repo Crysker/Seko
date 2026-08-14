@@ -8,6 +8,7 @@ using Seko.Infrastructure.Agent.Capabilities;
 using Seko.Infrastructure.Agent.Capabilities.BuiltIn;
 using Seko.Infrastructure.Agent.Git;
 using Seko.Infrastructure.Agent.Safety;
+using Seko.Infrastructure.Agent.Permissions;
 using Seko.Infrastructure.Agent.Tools;
 
 namespace Seko.Infrastructure.Agent;
@@ -80,6 +81,7 @@ public sealed class SekoToolHost
     private readonly WorkspacePathGuard _pathGuard;
     private readonly SekoToolRegistry _toolRegistry;
     private readonly SekoCapabilityRegistry _capabilityRegistry;
+    private readonly SekoPermissionPolicy _permissionPolicy;
     private readonly string _workspaceRoot;
 
     private readonly HashSet<string> _changedFiles =
@@ -120,9 +122,13 @@ public sealed class SekoToolHost
         _toolRegistry =
             new SekoToolRegistry();
 
+        _permissionPolicy =
+            SekoPermissionPolicy.CreateDefault();
+
         _capabilityRegistry =
             CreateCapabilityRegistry(
-                _toolRegistry);
+                _toolRegistry,
+                _permissionPolicy);
     }
 
     public async Task BeginTaskAsync(
@@ -511,7 +517,8 @@ public sealed class SekoToolHost
     }
 
     private SekoCapabilityRegistry CreateCapabilityRegistry(
-        SekoToolRegistry toolRegistry)
+        SekoToolRegistry toolRegistry,
+        SekoPermissionPolicy permissionPolicy)
     {
         var registry =
             new SekoCapabilityRegistry();
@@ -532,6 +539,8 @@ public sealed class SekoToolHost
                 ReadTaskLogAsync,
                 WriteFileAsync,
                 ReplaceTextAsync),
+            CapabilitySource.BuiltIn,
+            permissionPolicy,
             toolRegistry);
 
         registry.Register(
@@ -539,6 +548,8 @@ public sealed class SekoToolHost
                 (_, cancellationToken) =>
                     BuildProjectAsync(
                         cancellationToken)),
+            CapabilitySource.BuiltIn,
+            permissionPolicy,
             toolRegistry);
 
         registry.Register(
@@ -549,6 +560,8 @@ public sealed class SekoToolHost
                 (_, cancellationToken) =>
                     GetGitDiffAsync(
                         cancellationToken)),
+            CapabilitySource.BuiltIn,
+            permissionPolicy,
             toolRegistry);
 
         return registry;
