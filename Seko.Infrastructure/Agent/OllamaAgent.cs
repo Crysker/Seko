@@ -11,10 +11,10 @@ public sealed class OllamaAgent :
     IAgent,
     IAgentActivitySource
 {
-    private const int MaximumToolRounds = 16;
+    private const int MaximumToolRounds = 32;
     private const int MaximumNoProgressRounds = 3;
     private const int MaximumConversationMessages = 8;
-    private const int MaximumAutonomousContinuations = 6;
+    private const int MaximumAutonomousContinuations = 12;
 
     private static readonly HttpClient HttpClient =
         new()
