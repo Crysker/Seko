@@ -1,4 +1,5 @@
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Seko.Core.Agent;
@@ -15,6 +16,7 @@ public sealed class OllamaAgent :
     private const int MaximumNoProgressRounds = 3;
     private const int MaximumConversationMessages = 8;
     private const int MaximumAutonomousContinuations = 12;
+    private const int MaximumStrategyRecoveryAttempts = 2;
 
     private static readonly HttpClient HttpClient =
         new()
@@ -120,8 +122,11 @@ public sealed class OllamaAgent :
         var autonomousContinuations =
             0;
 
+        var strategyRecoveryAttempts =
+            0;
+
         var previousToolCalls =
-            new HashSet<string>(
+            new Dictionary<string, ToolCallRecord>(
                 StringComparer.Ordinal);
 
         for (var round = 0;
@@ -418,14 +423,18 @@ public sealed class OllamaAgent :
                 }
 
                 var callSignature =
-                    $"{modificationGeneration}|{toolName}|{argumentsJson}";
+                    CreateToolCallSignature(
+                        modificationGeneration,
+                        toolName,
+                        argumentsJson);
 
-                if (!previousToolCalls.Add(
-                        callSignature))
+                if (previousToolCalls.TryGetValue(
+                        callSignature,
+                        out var previousCall))
                 {
                     Report(
                         AgentActivityKind.Tool,
-                        $"Skipped duplicate {toolName} call.");
+                        $"Redirecting repeated {toolName} call...");
 
                     messages.Add(
                         new JsonObject
@@ -437,19 +446,10 @@ public sealed class OllamaAgent :
                                 toolName,
 
                             ["content"] =
-                                """
-                                SKIPPED DUPLICATE TOOL CALL.
-
-                                This exact tool call has already been executed
-                                with the same arguments and the workspace has not
-                                changed since then.
-
-                                Use the previous result.
-
-                                Do not repeat the same call.
-                                Try a different investigation or editing strategy,
-                                or finish if the CURRENT TASK is genuinely complete.
-                                """
+                                BuildDuplicateToolResponse(
+                                    toolName,
+                                    argumentsJson,
+                                    previousCall.Result)
                         });
 
                     continue;
@@ -480,6 +480,12 @@ public sealed class OllamaAgent :
                         toolCancellationToken);
 
                 cancellationToken.ThrowIfCancellationRequested();
+
+                previousToolCalls[callSignature] =
+                    new ToolCallRecord(
+                        toolName,
+                        argumentsJson,
+                        result);
 
                 anyRealToolExecuted =
                     true;
@@ -543,52 +549,73 @@ public sealed class OllamaAgent :
             {
                 noProgressRounds =
                     0;
+
+                strategyRecoveryAttempts =
+                    0;
             }
             else
             {
                 noProgressRounds++;
-            }
 
-            if (noProgressRounds == 2)
-            {
                 Report(
                     AgentActivityKind.Thinking,
-                    "Avoiding repeated tool calls...");
+                    noProgressRounds == 1
+                        ? "Changing strategy..."
+                        : "Recovering from repeated tool calls...");
 
                 AddHostControl(
                     messages,
                     currentTask,
-                    """
-                    You are repeating tool calls without making meaningful
-                    progress on the CURRENT TASK.
-
-                    Review the tool results already available.
-
-                    Do not repeat completed inspections.
-
-                    If a guessed filename or target was wrong:
-                    - do not keep guessing the same thing
-                    - inspect the workspace structure
-                    - inspect likely candidates
-                    - ground the next action in actual tool evidence
-
-                    If replace_text failed:
-                    - inspect the actual nearby source again
-                    - use the exact current text
-                    - retry with a corrected unique target
-
-                    If source was modified:
-                    - make sure the final modified source builds successfully
-
-                    Take one concrete new action toward the CURRENT TASK.
-                    """);
+                    BuildNoProgressRecoveryInstruction(
+                        previousToolCalls.Values));
             }
 
             if (noProgressRounds
                 >= MaximumNoProgressRounds)
             {
+                if (strategyRecoveryAttempts
+                    < MaximumStrategyRecoveryAttempts)
+                {
+                    strategyRecoveryAttempts++;
+
+                    noProgressRounds =
+                        0;
+
+                    Report(
+                        AgentActivityKind.Thinking,
+                        "Resetting execution strategy...");
+
+                    AddHostControl(
+                        messages,
+                        currentTask,
+                        """
+                        STRATEGY RESET REQUIRED.
+
+                        The previous strategy has stalled.
+
+                        Do not repeat any exact tool call whose result is already
+                        present in the conversation. Repeating identical evidence
+                        is not progress.
+
+                        Choose a materially different next action:
+                        - move from broad search to a concrete returned file
+                        - move from file discovery to source inspection
+                        - move from inspection to an edit when evidence is sufficient
+                        - after OLD_TEXT_NOT_FOUND, re-read the real target before editing
+                        - after a failed build, edit a compiler-referenced source file
+                          before building again
+                        - after a successful final build, finish the task instead of
+                          re-checking Git/status/search evidence
+
+                        Use the evidence already collected. Take exactly one new,
+                        concrete step toward completing the CURRENT TASK.
+                        """);
+
+                    continue;
+                }
+
                 return FinishIncompleteTask(
-                    "I stopped because repeated tool calls were no longer making meaningful progress. I did not mark the task as completed.");
+                    "I stopped because multiple strategy-recovery attempts still produced repeated tool calls without meaningful progress. I did not mark the task as completed.");
             }
         }
 
@@ -874,6 +901,7 @@ public sealed class OllamaAgent :
 
             REAL WORKSPACE TOOLS
             You have:
+            - search_workspace
             - find_files
             - find_text
             - list_files
@@ -895,9 +923,10 @@ public sealed class OllamaAgent :
 
             UI concept, feature name, behavior, version, panel, sidebar,
             button or other conceptual target:
+            -> use search_workspace first
             -> do NOT pretend the concept is necessarily a filename
-            -> inspect relevant project structure and candidate source files
-            -> search actual source text in likely candidates
+            -> use the ranked returned paths as evidence
+            -> inspect the strongest candidate with find_text or read_file
             -> ground the target in tool evidence before editing
 
             Example:
@@ -1325,6 +1354,254 @@ public sealed class OllamaAgent :
                 normalized.Contains);
     }
 
+    private static string CreateToolCallSignature(
+        int modificationGeneration,
+        string toolName,
+        string argumentsJson)
+    {
+        return
+            $"{modificationGeneration}|{toolName}|{NormalizeToolArguments(argumentsJson)}";
+    }
+
+    private static string NormalizeToolArguments(
+        string argumentsJson)
+    {
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    string.IsNullOrWhiteSpace(
+                        argumentsJson)
+                        ? "{}"
+                        : argumentsJson);
+
+            var builder =
+                new StringBuilder();
+
+            AppendCanonicalJson(
+                builder,
+                document.RootElement);
+
+            return builder.ToString();
+        }
+        catch
+        {
+            return
+                argumentsJson.Trim();
+        }
+    }
+
+    private static void AppendCanonicalJson(
+        StringBuilder builder,
+        JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                builder.Append('{');
+
+                var firstProperty =
+                    true;
+
+                foreach (var property
+                         in element
+                             .EnumerateObject()
+                             .OrderBy(
+                                 property => property.Name,
+                                 StringComparer.Ordinal))
+                {
+                    if (!firstProperty)
+                    {
+                        builder.Append(',');
+                    }
+
+                    firstProperty =
+                        false;
+
+                    builder.Append(
+                        JsonSerializer.Serialize(
+                            property.Name));
+
+                    builder.Append(':');
+
+                    AppendCanonicalJson(
+                        builder,
+                        property.Value);
+                }
+
+                builder.Append('}');
+                break;
+
+            case JsonValueKind.Array:
+                builder.Append('[');
+
+                var firstItem =
+                    true;
+
+                foreach (var item
+                         in element.EnumerateArray())
+                {
+                    if (!firstItem)
+                    {
+                        builder.Append(',');
+                    }
+
+                    firstItem =
+                        false;
+
+                    AppendCanonicalJson(
+                        builder,
+                        item);
+                }
+
+                builder.Append(']');
+                break;
+
+            default:
+                builder.Append(
+                    element.GetRawText());
+                break;
+        }
+    }
+
+    private static string BuildDuplicateToolResponse(
+        string toolName,
+        string argumentsJson,
+        string previousResult)
+    {
+        var nextAction =
+            GetDuplicateRecoveryGuidance(
+                toolName,
+                previousResult);
+
+        var previousEvidence =
+            Shorten(
+                previousResult,
+                2_000);
+
+        return
+            $"""
+            REPEATED TOOL CALL BLOCKED.
+
+            The exact semantic call to '{toolName}' has already been executed with
+            these arguments since the workspace last changed:
+            {argumentsJson}
+
+            Repeating it would return the same evidence and is not progress.
+
+            PREVIOUS RESULT SUMMARY:
+            {previousEvidence}
+
+            REQUIRED NEXT ACTION:
+            {nextAction}
+
+            Do not call this exact tool+argument combination again unless the
+            workspace changes first.
+            """;
+    }
+
+    private static string GetDuplicateRecoveryGuidance(
+        string toolName,
+        string previousResult)
+    {
+        return toolName switch
+        {
+            "search_workspace" =>
+                "Use one of the ranked paths already returned. Inspect that concrete file with find_text or read_file. If there were no useful matches, materially change the search query instead of repeating it.",
+
+            "find_files" =>
+                "Use a returned path with find_text or read_file. If nothing useful was returned, switch to search_workspace with the user-facing concept or feature name.",
+
+            "find_text" =>
+                "Use the context already returned. If it is sufficient, edit with replace_text. If more context is genuinely required, read_file once instead of repeating the same find_text call.",
+
+            "read_file" =>
+                "Act on the file contents already available. Edit when the target is known, build when verification is needed, or finish when the task is already complete.",
+
+            "git_status" =>
+                "The Git state is already known. Do not re-check it unchanged. Continue with discovery, inspection, editing, building, or finish the task.",
+
+            "git_diff" =>
+                "The current diff is already known. Use it to decide the next edit/build/finalization step instead of requesting the same diff again.",
+
+            "build_project" when IsSuccessfulBuildResult(
+                previousResult) =>
+                "The current source already has a successful build result. If no later build-relevant modification occurred, finish the task rather than rebuilding unchanged source.",
+
+            "build_project" =>
+                "The previous build did not succeed. Use its compiler/error output to inspect and edit a referenced source file before running another build.",
+
+            "replace_text" when previousResult.Contains(
+                "OLD_TEXT_NOT_FOUND",
+                StringComparison.OrdinalIgnoreCase) =>
+                "Re-inspect the exact target file with find_text or read_file, copy the real current source, and retry with a corrected unique old_text. Do not reuse the failed old_text.",
+
+            "replace_text" when IsSuccessfulModification(
+                previousResult) =>
+                "That edit already succeeded. Do not apply it again. Build if required, verify the resulting source, then finish.",
+
+            "replace_text" =>
+                "Use the previous error as evidence. Inspect the target again or choose a more specific unique replacement before making another edit attempt.",
+
+            "write_file" when IsSuccessfulModification(
+                previousResult) =>
+                "That write already succeeded. Do not rewrite the same content. Build if required, verify, then finish.",
+
+            "write_file" =>
+                "Inspect the target and previous error, then change the content or path materially before retrying.",
+
+            _ =>
+                "Use the previous result as evidence and choose a materially different tool, arguments, target, or execution step. If the task is already verified, finish instead of inspecting again."
+        };
+    }
+
+    private static string BuildNoProgressRecoveryInstruction(
+        IEnumerable<ToolCallRecord> previousCalls)
+    {
+        var recentTools =
+            previousCalls
+                .Select(
+                    call => call.ToolName)
+                .Distinct(
+                    StringComparer.Ordinal)
+                .TakeLast(6)
+                .ToArray();
+
+        var recentSummary =
+            recentTools.Length == 0
+                ? "No distinct tool evidence is available yet."
+                : "Evidence already collected with: " +
+                  string.Join(
+                      ", ",
+                      recentTools) +
+                  ".";
+
+        return
+            $"""
+            The CURRENT TASK is stalled because the latest round did not produce
+            new evidence or a new workspace state.
+
+            {recentSummary}
+
+            IMPORTANT:
+            - Do not repeat an exact tool call whose result is already in context.
+            - Re-reading identical evidence is not progress.
+            - Use the previous tool result before asking for more information.
+
+            Change stage or strategy now:
+            discovery -> concrete candidate -> focused inspection -> edit -> build -> finish
+
+            Examples:
+            - after search_workspace/find_files: choose one returned path
+            - after find_text/read_file: act on the source instead of reading it again
+            - after OLD_TEXT_NOT_FOUND: re-inspect the actual target and change old_text
+            - after a failed build: edit a compiler-referenced file before rebuilding
+            - after a successful final build: finish instead of rechecking unchanged state
+
+            Take one concrete NEW action toward the CURRENT TASK.
+            """;
+    }
+
     private static bool ToolTargetsBuildRelevantFile(
         string argumentsJson)
     {
@@ -1433,8 +1710,19 @@ public sealed class OllamaAgent :
                 argumentsJson,
                 "name");
 
+        var query =
+            GetToolArgument(
+                argumentsJson,
+                "query");
+
         return toolName switch
         {
+            "search_workspace" =>
+                string.IsNullOrWhiteSpace(
+                    query)
+                    ? "Searching workspace..."
+                    : $"Searching workspace for {Shorten(query, 60)}...",
+
             "git_status" =>
                 "Checking Git status...",
 
@@ -1554,6 +1842,11 @@ public sealed class OllamaAgent :
                     content
             };
     }
+
+    private sealed record ToolCallRecord(
+        string ToolName,
+        string ArgumentsJson,
+        string Result);
 
     private sealed record TaskIntent(
         bool RequiresWorkspaceTools,
