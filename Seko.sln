@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -8,6 +8,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Seko.Core", "Seko.Core\Seko.Core.csproj", "{464656FE-9726-4BB6-931B-22725B99CF30}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Seko.Infrastructure", "Seko.Infrastructure\Seko.Infrastructure.csproj", "{1AC03E1C-4F7B-45F9-91E2-08F88D1C2526}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Seko.Tests", "Seko.Tests\Seko.Tests.csproj", "{97EC4E53-3682-4248-85FB-03D3BE67AFC5}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -30,5 +32,9 @@ Global
 		{1AC03E1C-4F7B-45F9-91E2-08F88D1C2526}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1AC03E1C-4F7B-45F9-91E2-08F88D1C2526}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1AC03E1C-4F7B-45F9-91E2-08F88D1C2526}.Release|Any CPU.Build.0 = Release|Any CPU
+		{97EC4E53-3682-4248-85FB-03D3BE67AFC5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{97EC4E53-3682-4248-85FB-03D3BE67AFC5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{97EC4E53-3682-4248-85FB-03D3BE67AFC5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{97EC4E53-3682-4248-85FB-03D3BE67AFC5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
