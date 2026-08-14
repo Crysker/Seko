@@ -353,7 +353,7 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "read_file",
-                "Read an entire text or source-code file. Use find_text instead when only a small relevant section is needed.",
+                "Read a text or source-code file. Small files are returned whole. Large files are returned in bounded line ranges so one read cannot overflow the local model context. Use find_text for focused inspection, or start_line/max_lines to continue through a large file.",
                 new JsonObject
                 {
                     ["type"] =
@@ -364,7 +364,36 @@ public sealed class SekoToolHost
                         {
                             ["path"] =
                                 StringProperty(
-                                    "File path relative to the workspace root.")
+                                    "File path relative to the workspace root."),
+
+                            ["start_line"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Optional 1-based first line for a large file.",
+
+                                    ["minimum"] =
+                                        1
+                                },
+
+                            ["max_lines"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Maximum lines to return. Defaults to 180 and is capped at 250.",
+
+                                    ["minimum"] =
+                                        1,
+
+                                    ["maximum"] =
+                                        250
+                                }
                         },
 
                     ["required"] =
@@ -1003,9 +1032,11 @@ public sealed class SekoToolHost
         }
 
         return
-            builder
-                .ToString()
-                .TrimEnd();
+            TrimOutputBalanced(
+                builder
+                    .ToString()
+                    .TrimEnd(),
+                10_000);
     }
 
     private string FindFiles(
@@ -1250,9 +1281,11 @@ public sealed class SekoToolHost
         }
 
         return
-            builder
-                .ToString()
-                .TrimEnd();
+            TrimOutputBalanced(
+                builder
+                    .ToString()
+                    .TrimEnd(),
+                9_000);
     }
 
     private string ListFiles(
@@ -1406,20 +1439,97 @@ public sealed class SekoToolHost
             new FileInfo(
                 fullPath);
 
-        if (fileInfo.Length > 600_000)
+        if (fileInfo.Length > 1_500_000)
         {
             return
-                "ERROR: File is too large for the current read tool.";
+                "ERROR: File is too large for the current read tool. Use find_text or another focused inspection strategy.";
         }
 
-        var content =
-            await File.ReadAllTextAsync(
+        var lines =
+            await File.ReadAllLinesAsync(
                 fullPath,
                 cancellationToken);
 
+        var requestedStartLine =
+            Math.Max(
+                1,
+                GetOptionalInteger(
+                    arguments,
+                    "start_line",
+                    1));
+
+        var requestedMaxLines =
+            Math.Clamp(
+                GetOptionalInteger(
+                    arguments,
+                    "max_lines",
+                    180),
+                1,
+                250);
+
+        if (lines.Length == 0)
+        {
+            return
+                $"FILE: {NormalizeRelativePath(relativePath)}\nTOTAL LINES: 0\n\n[empty file]";
+        }
+
+        if (requestedStartLine > lines.Length)
+        {
+            return
+                $"ERROR: start_line {requestedStartLine} is beyond the end of {NormalizeRelativePath(relativePath)} ({lines.Length} lines).";
+        }
+
+        var startIndex =
+            requestedStartLine - 1;
+
+        var endIndexExclusive =
+            Math.Min(
+                lines.Length,
+                startIndex + requestedMaxLines);
+
+        var builder =
+            new StringBuilder();
+
+        builder.AppendLine(
+            $"FILE: {NormalizeRelativePath(relativePath)}");
+
+        builder.AppendLine(
+            $"TOTAL LINES: {lines.Length}");
+
+        builder.AppendLine(
+            $"SHOWING LINES: {requestedStartLine}-{endIndexExclusive}");
+
+        builder.AppendLine();
+
+        for (var index = startIndex;
+             index < endIndexExclusive;
+             index++)
+        {
+            builder.Append(
+                (index + 1)
+                    .ToString()
+                    .PadLeft(5));
+
+            builder.Append(
+                " | ");
+
+            builder.AppendLine(
+                lines[index]);
+        }
+
+        if (endIndexExclusive < lines.Length)
+        {
+            builder.AppendLine();
+            builder.AppendLine(
+                $"[More lines available. Continue with read_file start_line={endIndexExclusive + 1}.]");
+        }
+
         return
-            $"FILE: {NormalizeRelativePath(relativePath)}\n\n" +
-            content;
+            TrimOutputBalanced(
+                builder
+                    .ToString()
+                    .TrimEnd(),
+                10_000);
     }
 
     private static async Task<string> ReadTaskLogAsync(
@@ -1506,7 +1616,7 @@ public sealed class SekoToolHost
             cancellationToken.ThrowIfCancellationRequested();
 
             if (logFile.Length
-                > 500_000)
+                > 2_000_000)
             {
                 continue;
             }
@@ -1548,9 +1658,9 @@ public sealed class SekoToolHost
             return
                 $"TASK LOG FILE: {logFile.Name}\n" +
                 $"SELECTION: {selection}\n\n" +
-                TrimOutput(
+                TrimOutputBalanced(
                     content,
-                    80_000);
+                    10_000);
         }
 
         return selection
@@ -1605,7 +1715,7 @@ public sealed class SekoToolHost
         EnsureAllowedFile(
             fullPath);
 
-        EnsureNewSourcePathBelongsToProject(
+        EnsureSourceModificationBelongsToProject(
             fullPath);
 
         var directory =
@@ -1688,6 +1798,9 @@ public sealed class SekoToolHost
                 relativePath);
 
         EnsureAllowedFile(
+            fullPath);
+
+        EnsureSourceModificationBelongsToProject(
             fullPath);
 
         if (!File.Exists(
@@ -1802,7 +1915,6 @@ public sealed class SekoToolHost
                 {
                     "build",
                     target,
-                    "--no-restore",
                     $"-p:BaseOutputPath={buildOutput}{Path.DirectorySeparatorChar}"
                 },
                 _workspaceRoot,
@@ -1821,9 +1933,9 @@ public sealed class SekoToolHost
         return
             $"BUILD TARGET: {ToRelativePath(target)}\n" +
             $"BUILD EXIT CODE: {result.ExitCode}\n\n" +
-            TrimOutput(
+            TrimOutputBalanced(
                 result.Output,
-                30_000);
+                10_000);
     }
 
     private async Task<string> GetGitStatusAsync(
@@ -1884,9 +1996,9 @@ public sealed class SekoToolHost
         }
 
         return
-            TrimOutput(
+            TrimOutputBalanced(
                 result.Output,
-                30_000);
+                10_000);
     }
 
     private void RegisterChangedFile(
@@ -1966,7 +2078,68 @@ public sealed class SekoToolHost
                 "Access to Git internals, build output and generated directories is blocked.");
         }
 
+        EnsureNoReparsePointEscape(
+            root,
+            fullPath);
+
         return fullPath;
+    }
+
+    private static void EnsureNoReparsePointEscape(
+        string workspaceRoot,
+        string fullPath)
+    {
+        var relativePath =
+            Path.GetRelativePath(
+                workspaceRoot,
+                fullPath);
+
+        var current =
+            workspaceRoot;
+
+        foreach (var part
+                 in relativePath.Split(
+                     new[]
+                     {
+                         Path.DirectorySeparatorChar,
+                         Path.AltDirectorySeparatorChar
+                     },
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            current =
+                Path.Combine(
+                    current,
+                    part);
+
+            if (!File.Exists(current)
+                && !Directory.Exists(current))
+            {
+                // Remaining path components do not exist yet.
+                break;
+            }
+
+            FileAttributes attributes;
+
+            try
+            {
+                attributes =
+                    File.GetAttributes(
+                        current);
+            }
+            catch (Exception exception)
+            {
+                throw new UnauthorizedAccessException(
+                    "Seko could not safely verify the requested workspace path.",
+                    exception);
+            }
+
+            if ((attributes & FileAttributes.ReparsePoint)
+                != 0)
+            {
+                throw new UnauthorizedAccessException(
+                    "Access through symbolic links, junctions or other reparse points is blocked because the target could escape the active workspace.");
+            }
+        }
     }
 
     private static void EnsureAllowedFile(
@@ -2002,18 +2175,27 @@ public sealed class SekoToolHost
         }
     }
 
-    private void EnsureNewSourcePathBelongsToProject(
+    private void EnsureSourceModificationBelongsToProject(
         string fullPath)
     {
-        if (File.Exists(
-                fullPath))
-        {
-            return;
-        }
-
         var extension =
             Path.GetExtension(
                 fullPath);
+
+        if (!File.Exists(
+                fullPath)
+            && (extension.Equals(
+                    ".csproj",
+                    StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(
+                    ".sln",
+                    StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException(
+                "NEW_PROJECT_FILE_REQUIRES_EXPLICIT_SUPPORT.\n\n" +
+                "The generic write_file tool cannot create a new .csproj or .sln because an unreferenced project can make a build pass while the new code is never compiled. " +
+                "Add dedicated project-creation support before allowing this operation.");
+        }
 
         if (!extension.Equals(
                 ".cs",
@@ -2058,10 +2240,10 @@ public sealed class SekoToolHost
 
         throw new InvalidOperationException(
             "SOURCE_PATH_NOT_IN_PROJECT.\n\n" +
-            $"Refusing to create new source file '{relativePath}' because it is not inside a real .NET project.\n\n" +
+            $"Refusing to modify source file '{relativePath}' because it is not inside a real .NET project included by the active solution.\n\n" +
             "Known project roots:\n" +
             knownRoots +
-            "\n\nInspect the solution/project structure and create the source file inside the appropriate project instead of inventing a workspace folder from the workspace name.");
+            "\n\nInspect the solution/project structure and modify source only inside the appropriate project instead of using an orphan or invented workspace folder.");
     }
 
     private IReadOnlyList<string> GetKnownProjectRoots()
@@ -2076,6 +2258,10 @@ public sealed class SekoToolHost
                     _workspaceRoot,
                     "*.sln",
                     SearchOption.TopDirectoryOnly)
+                .Where(
+                    path =>
+                        !IsReparsePoint(
+                            path))
                 .OrderBy(
                     path => path,
                     StringComparer.OrdinalIgnoreCase)
@@ -2145,22 +2331,15 @@ public sealed class SekoToolHost
             try
             {
                 foreach (var projectPath
-                         in Directory.EnumerateFiles(
-                             _workspaceRoot,
-                             "*.csproj",
-                             SearchOption.AllDirectories))
+                         in EnumerateWorkspaceFiles(
+                             10_000)
+                             .Where(
+                                 path =>
+                                     Path.GetExtension(path)
+                                         .Equals(
+                                             ".csproj",
+                                             StringComparison.OrdinalIgnoreCase)))
                 {
-                    var relativeProjectPath =
-                        Path.GetRelativePath(
-                            _workspaceRoot,
-                            projectPath);
-
-                    if (PathContainsIgnoredDirectory(
-                            relativeProjectPath))
-                    {
-                        continue;
-                    }
-
                     var projectRoot =
                         Path.GetDirectoryName(
                             projectPath);
@@ -2251,6 +2430,10 @@ public sealed class SekoToolHost
                 "appsettings.Local.json",
                 StringComparison.OrdinalIgnoreCase)
 
+            || fileName.Equals(
+                "appsettings.Development.local.json",
+                StringComparison.OrdinalIgnoreCase)
+
             || extension.Equals(
                 ".pem",
                 StringComparison.OrdinalIgnoreCase)
@@ -2276,6 +2459,10 @@ public sealed class SekoToolHost
                     _workspaceRoot,
                     "*.sln",
                     SearchOption.TopDirectoryOnly)
+                .Where(
+                    path =>
+                        !IsReparsePoint(
+                            path))
                 .OrderBy(
                     path => path,
                     StringComparer.OrdinalIgnoreCase)
@@ -2286,17 +2473,14 @@ public sealed class SekoToolHost
             return solution;
         }
 
-        return Directory
-            .EnumerateFiles(
-                _workspaceRoot,
-                "*.csproj",
-                SearchOption.AllDirectories)
+        return EnumerateWorkspaceFiles(
+                10_000)
             .Where(
                 path =>
-                    !PathContainsIgnoredDirectory(
-                        Path.GetRelativePath(
-                            _workspaceRoot,
-                            path)))
+                    Path.GetExtension(path)
+                        .Equals(
+                            ".csproj",
+                            StringComparison.OrdinalIgnoreCase))
             .OrderBy(
                 path => path,
                 StringComparer.OrdinalIgnoreCase)
@@ -2866,7 +3050,12 @@ public sealed class SekoToolHost
         {
             return
                 Directory.GetDirectories(
-                    path);
+                        path)
+                    .Where(
+                        directory =>
+                            !IsReparsePoint(
+                                directory))
+                    .ToArray();
         }
         catch
         {
@@ -2882,12 +3071,34 @@ public sealed class SekoToolHost
         {
             return
                 Directory.GetFiles(
-                    path);
+                        path)
+                    .Where(
+                        file =>
+                            !IsReparsePoint(
+                                file))
+                    .ToArray();
         }
         catch
         {
             return
                 Array.Empty<string>();
+        }
+    }
+
+    private static bool IsReparsePoint(
+        string path)
+    {
+        try
+        {
+            return
+                (File.GetAttributes(path)
+                 & FileAttributes.ReparsePoint)
+                != 0;
+        }
+        catch
+        {
+            // If metadata cannot be inspected, do not traverse it implicitly.
+            return true;
         }
     }
 
@@ -3141,6 +3352,40 @@ public sealed class SekoToolHost
         {
             // Best effort.
         }
+    }
+
+    private static string TrimOutputBalanced(
+        string output,
+        int maximumLength)
+    {
+        if (output.Length
+            <= maximumLength)
+        {
+            return output;
+        }
+
+        var marker =
+            Environment.NewLine
+            + Environment.NewLine
+            + "[Middle of output truncated to protect model context]"
+            + Environment.NewLine
+            + Environment.NewLine;
+
+        var available =
+            Math.Max(
+                0,
+                maximumLength - marker.Length);
+
+        var headLength =
+            available * 2 / 3;
+
+        var tailLength =
+            available - headLength;
+
+        return
+            output[..headLength]
+            + marker
+            + output[^tailLength..];
     }
 
     private static string TrimOutput(

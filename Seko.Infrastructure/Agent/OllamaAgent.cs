@@ -729,6 +729,17 @@ public sealed class OllamaAgent :
         }
 
         if (!string.IsNullOrWhiteSpace(
+                gitResult)
+            && IsBlockingGitFinalizationFailure(
+                gitResult))
+        {
+            return FinishIncompleteTask(
+                "The workspace changes were made, but Git finalization failed. " +
+                "The task was not marked complete so the transaction can restore a safe baseline.\n\n" +
+                gitResult);
+        }
+
+        if (!string.IsNullOrWhiteSpace(
                 gitResult))
         {
             Report(
@@ -794,7 +805,10 @@ public sealed class OllamaAgent :
                     _model,
 
                 ["messages"] =
-                    messages.DeepClone(),
+                    workspaceToolsRequired
+                        ? BuildBoundedWorkspaceMessages(
+                            messages)
+                        : messages.DeepClone(),
 
                 ["tools"] =
                     _toolHost.CreateToolDefinitions(),
@@ -834,6 +848,14 @@ public sealed class OllamaAgent :
                     request,
                     cancellationToken);
         }
+        catch (OperationCanceledException exception)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "The Ollama request timed out before the model responded. " +
+                "The task failed rather than being treated as a user Stop action.",
+                exception);
+        }
         catch (HttpRequestException exception)
         {
             throw new InvalidOperationException(
@@ -858,6 +880,137 @@ public sealed class OllamaAgent :
             return JsonDocument.Parse(
                 responseText);
         }
+    }
+
+    private static JsonArray BuildBoundedWorkspaceMessages(
+        JsonArray messages)
+    {
+        const int maximumSerializedCharacters =
+            22_000;
+
+        if (messages.Count <= 2
+            || messages.ToJsonString().Length
+                <= maximumSerializedCharacters)
+        {
+            return
+                (JsonArray)messages.DeepClone();
+        }
+
+        var result =
+            new JsonArray();
+
+        // The first system message and current-task user message are the hard
+        // task boundary and must never be evicted by accumulated tool output.
+        for (var index = 0;
+             index < Math.Min(
+                 2,
+                 messages.Count);
+             index++)
+        {
+            result.Add(
+                messages[index]?.DeepClone());
+        }
+
+        var groups =
+            new List<List<JsonNode?>>();
+
+        for (var index = 2;
+             index < messages.Count;)
+        {
+            var group =
+                new List<JsonNode?>();
+
+            var current =
+                messages[index];
+
+            group.Add(
+                current);
+
+            var role =
+                current?["role"]
+                    ?.GetValue<string>();
+
+            index++;
+
+            if (string.Equals(
+                    role,
+                    "assistant",
+                    StringComparison.Ordinal))
+            {
+                while (index < messages.Count)
+                {
+                    var nextRole =
+                        messages[index]?["role"]
+                            ?.GetValue<string>();
+
+                    if (!string.Equals(
+                            nextRole,
+                            "tool",
+                            StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    group.Add(
+                        messages[index]);
+
+                    index++;
+                }
+            }
+
+            groups.Add(
+                group);
+        }
+
+        var selectedGroups =
+            new List<List<JsonNode?>>();
+
+        var usedCharacters =
+            result.ToJsonString().Length;
+
+        for (var groupIndex = groups.Count - 1;
+             groupIndex >= 0;
+             groupIndex--)
+        {
+            var group =
+                groups[groupIndex];
+
+            var groupCharacters =
+                group.Sum(
+                    node =>
+                        node?.ToJsonString().Length
+                        ?? 0);
+
+            if (usedCharacters + groupCharacters
+                > maximumSerializedCharacters)
+            {
+                // Older evidence is intentionally dropped as one coherent
+                // assistant/tool group. Host-side duplicate memory still keeps
+                // the agent from blindly re-executing the same call.
+                break;
+            }
+
+            selectedGroups.Add(
+                group);
+
+            usedCharacters +=
+                groupCharacters;
+        }
+
+        selectedGroups.Reverse();
+
+        foreach (var group
+                 in selectedGroups)
+        {
+            foreach (var node
+                     in group)
+            {
+                result.Add(
+                    node?.DeepClone());
+            }
+        }
+
+        return result;
     }
 
     private JsonArray BuildMessages(
@@ -1041,8 +1194,8 @@ public sealed class OllamaAgent :
             -> ground the target in tool evidence before editing
 
             Example:
-            "activity panel" does not automatically mean a file named
-            ActivityPanel.xaml or AgentMonitorWindow.xaml.
+            "activity panel" is a user-facing concept, not necessarily a file
+            name. Search the workspace and verify which real source owns it.
 
             Verify which UI actually implements the requested element.
 
@@ -1176,6 +1329,35 @@ public sealed class OllamaAgent :
     {
         var normalized =
             request.ToLowerInvariant();
+
+        /*
+            Explicit read-only wording wins over mutation keywords.
+
+            Without this guard, a request such as "inspect the project, but do
+            not modify any files" contains both "modify" and "file" and was
+            incorrectly classified as a required modification task.
+        */
+        var explicitlyReadOnly =
+            ContainsAnyPhrase(
+                normalized,
+                "do not modify",
+                "don't modify",
+                "do not change",
+                "don't change",
+                "do not edit",
+                "don't edit",
+                "without modifying",
+                "without changing",
+                "without editing",
+                "without making changes",
+                "do not make changes",
+                "don't make changes",
+                "no modifications",
+                "read only",
+                "read-only",
+                "inspect only",
+                "do not write",
+                "don't write");
 
         var mutationWords =
             new[]
@@ -1312,7 +1494,8 @@ public sealed class OllamaAgent :
                 normalized.Contains);
 
         var requiresModification =
-            hasMutation
+            !explicitlyReadOnly
+            && hasMutation
             && hasWorkspaceTarget;
 
         var requiresWorkspaceTools =
@@ -1336,7 +1519,7 @@ public sealed class OllamaAgent :
                 true;
 
             requiresModification =
-                true;
+                !explicitlyReadOnly;
         }
 
         return
@@ -1344,6 +1527,18 @@ public sealed class OllamaAgent :
                 requiresWorkspaceTools,
                 requiresModification,
                 explicitBuildRequested);
+    }
+
+    private static bool ContainsAnyPhrase(
+        string value,
+        params string[] phrases)
+    {
+        return
+            phrases.Any(
+                phrase =>
+                    value.Contains(
+                        phrase,
+                        StringComparison.Ordinal));
     }
 
     private static bool TryContinueAutonomously(
@@ -1859,6 +2054,23 @@ public sealed class OllamaAgent :
 
         return
             SekoDiagnosticEventKind.Tool;
+    }
+
+    private static bool IsBlockingGitFinalizationFailure(
+        string result)
+    {
+        return
+            result.StartsWith(
+                "Git: staging failed.",
+                StringComparison.OrdinalIgnoreCase)
+
+            || result.StartsWith(
+                "Git: changes were staged, but the commit failed.",
+                StringComparison.OrdinalIgnoreCase)
+
+            || result.StartsWith(
+                "Git: changes were not committed because",
+                StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSuccessfulGitResult(

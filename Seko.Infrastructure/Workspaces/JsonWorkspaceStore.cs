@@ -48,7 +48,32 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
         }
         catch
         {
-            return new WorkspaceState();
+            var backupPath =
+                _filePath +
+                ".bak";
+
+            if (!File.Exists(
+                    backupPath))
+            {
+                return new WorkspaceState();
+            }
+
+            try
+            {
+                var backupJson =
+                    File.ReadAllText(
+                        backupPath);
+
+                return
+                    JsonSerializer.Deserialize<WorkspaceState>(
+                        backupJson,
+                        _jsonOptions)
+                    ?? new WorkspaceState();
+            }
+            catch
+            {
+                return new WorkspaceState();
+            }
         }
     }
 
@@ -65,8 +90,44 @@ public sealed class JsonWorkspaceStore : IWorkspaceStore
             state,
             _jsonOptions);
 
+        var temporaryPath =
+            _filePath +
+            ".tmp";
+
+        var backupPath =
+            _filePath +
+            ".bak";
+
         File.WriteAllText(
-            _filePath,
+            temporaryPath,
             json);
+
+        try
+        {
+            if (File.Exists(
+                    _filePath))
+            {
+                File.Replace(
+                    temporaryPath,
+                    _filePath,
+                    backupPath,
+                    true);
+            }
+            else
+            {
+                File.Move(
+                    temporaryPath,
+                    _filePath);
+            }
+        }
+        finally
+        {
+            if (File.Exists(
+                    temporaryPath))
+            {
+                File.Delete(
+                    temporaryPath);
+            }
+        }
     }
 }

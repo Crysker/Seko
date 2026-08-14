@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using Seko.Core.Agent;
 using Seko.Core.Workspaces;
 
@@ -38,6 +39,12 @@ public sealed class SekoTaskLogger
         new(
             @"\bsk-[A-Za-z0-9_-]{12,}\b",
             RegexOptions.Compiled);
+
+    private static readonly Regex GitHubTokenRegex =
+        new(
+            @"\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b",
+            RegexOptions.Compiled
+            | RegexOptions.IgnoreCase);
 
     private static readonly Regex PrivateKeyRegex =
         new(
@@ -173,10 +180,9 @@ public sealed class SekoTaskLogger
                         diagnosticEvent.Kind.ToString(),
                         diagnosticEvent.Name,
                         diagnosticEvent.Duration,
-                        SanitizeAndTruncate(
-                            diagnosticEvent.Arguments
-                            ?? string.Empty,
-                            MaximumArgumentsLength),
+                        PrepareArgumentsForLog(
+                            diagnosticEvent.Name,
+                            diagnosticEvent.Arguments),
                         SanitizeAndTruncate(
                             diagnosticEvent.Result
                             ?? string.Empty,
@@ -384,11 +390,51 @@ public sealed class SekoTaskLogger
                 "_Task is still running._");
         }
 
-        File.WriteAllText(
+        WriteSnapshotAtomically(
             session.FilePath,
-            builder.ToString(),
+            builder.ToString());
+    }
+
+    private static void WriteSnapshotAtomically(
+        string filePath,
+        string content)
+    {
+        var temporaryPath =
+            filePath +
+            ".tmp";
+
+        File.WriteAllText(
+            temporaryPath,
+            content,
             new UTF8Encoding(
                 false));
+
+        try
+        {
+            if (File.Exists(
+                    filePath))
+            {
+                File.Replace(
+                    temporaryPath,
+                    filePath,
+                    null);
+            }
+            else
+            {
+                File.Move(
+                    temporaryPath,
+                    filePath);
+            }
+        }
+        finally
+        {
+            if (File.Exists(
+                    temporaryPath))
+            {
+                File.Delete(
+                    temporaryPath);
+            }
+        }
     }
 
     private static void WriteActivitySection(
@@ -494,7 +540,7 @@ public sealed class SekoTaskLogger
                     entry.Category));
 
             builder.Append(
-                " · `");
+                " - `");
 
             builder.Append(
                 EscapeInline(
@@ -575,6 +621,87 @@ public sealed class SekoTaskLogger
             "```");
     }
 
+    private static string PrepareArgumentsForLog(
+        string toolName,
+        string? arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments))
+        {
+            return string.Empty;
+        }
+
+        if (!toolName.Equals(
+                "write_file",
+                StringComparison.Ordinal)
+            && !toolName.Equals(
+                "replace_text",
+                StringComparison.Ordinal))
+        {
+            return
+                SanitizeAndTruncate(
+                    arguments,
+                    MaximumArgumentsLength);
+        }
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    arguments);
+
+            var root =
+                document.RootElement;
+
+            var path =
+                root.TryGetProperty(
+                    "path",
+                    out var pathElement)
+                && pathElement.ValueKind == JsonValueKind.String
+                    ? pathElement.GetString()
+                    : null;
+
+            if (toolName.Equals(
+                    "write_file",
+                    StringComparison.Ordinal))
+            {
+                var contentLength =
+                    root.TryGetProperty(
+                        "content",
+                        out var contentElement)
+                    && contentElement.ValueKind == JsonValueKind.String
+                        ? contentElement.GetString()?.Length ?? 0
+                        : 0;
+
+                return
+                    $"path={Sanitize(path ?? string.Empty)}; content_length={contentLength}";
+            }
+
+            var oldTextLength =
+                root.TryGetProperty(
+                    "old_text",
+                    out var oldTextElement)
+                && oldTextElement.ValueKind == JsonValueKind.String
+                    ? oldTextElement.GetString()?.Length ?? 0
+                    : 0;
+
+            var newTextLength =
+                root.TryGetProperty(
+                    "new_text",
+                    out var newTextElement)
+                && newTextElement.ValueKind == JsonValueKind.String
+                    ? newTextElement.GetString()?.Length ?? 0
+                    : 0;
+
+            return
+                $"path={Sanitize(path ?? string.Empty)}; old_text_length={oldTextLength}; new_text_length={newTextLength}";
+        }
+        catch
+        {
+            return
+                "[edit arguments withheld because they could contain source or sensitive content]";
+        }
+    }
+
     private static string FormatDuration(
         TimeSpan duration)
     {
@@ -650,6 +777,11 @@ public sealed class SekoTaskLogger
             ApiTokenRegex.Replace(
                 sanitized,
                 "[REDACTED TOKEN]");
+
+        sanitized =
+            GitHubTokenRegex.Replace(
+                sanitized,
+                "[REDACTED GITHUB TOKEN]");
 
         sanitized =
             JsonSecretRegex.Replace(

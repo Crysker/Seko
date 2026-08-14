@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Seko.Core.Agent;
 using Seko.Core.Workspaces;
 
@@ -188,6 +189,67 @@ internal static class SekoSelfUpdateCoordinator
                     "Self-update: a new commit exists, but additional uncommitted changes remain. Automatic push and restart were skipped for safety.");
         }
 
+        var originCheck =
+            await RunProcessAsync(
+                "git",
+                new[]
+                {
+                    "remote",
+                    "get-url",
+                    "--push",
+                    "origin"
+                },
+                workspace.RootPath,
+                cancellationToken);
+
+        if (originCheck.ExitCode != 0
+            || !IsTrustedSekoOrigin(
+                originCheck.Output))
+        {
+            report?.Invoke(
+                new AgentActivity(
+                    AgentActivityKind.Error,
+                    "Automatic push skipped: Git origin is not the trusted Seko repository."));
+
+            return
+                new SekoSelfUpdateResult(
+                    true,
+                    false,
+                    shouldRestart,
+                    "Self-update: the local commit is safe, but automatic push was skipped because the Git origin is not the trusted Crysker/Seko repository.\n" +
+                    "Update: restart requested for the local build.");
+        }
+
+        var branchCheck =
+            await RunProcessAsync(
+                "git",
+                new[]
+                {
+                    "branch",
+                    "--show-current"
+                },
+                workspace.RootPath,
+                cancellationToken);
+
+        if (branchCheck.ExitCode != 0
+            || !branchCheck.Output.Trim().Equals(
+                "main",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            report?.Invoke(
+                new AgentActivity(
+                    AgentActivityKind.Error,
+                    "Automatic push skipped: self-update is not on main."));
+
+            return
+                new SekoSelfUpdateResult(
+                    true,
+                    false,
+                    shouldRestart,
+                    "Self-update: the local commit is safe, but automatic push was skipped because the current branch is not main.\n" +
+                    "Update: restart requested for the local build.");
+        }
+
         report?.Invoke(
             new AgentActivity(
                 AgentActivityKind.Git,
@@ -249,6 +311,20 @@ internal static class SekoSelfUpdateCoordinator
                 "GitHub: automatic push failed. The local commit is still safe.\n\n" +
                 pushResult.Output +
                 "\n\nUpdate: restarting into the local build anyway.");
+    }
+
+    private static bool IsTrustedSekoOrigin(
+        string remoteUrl)
+    {
+        var normalized =
+            remoteUrl.Trim();
+
+        return
+            Regex.IsMatch(
+                normalized,
+                @"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)Crysker/Seko(?:\.git)?/?$",
+                RegexOptions.IgnoreCase
+                | RegexOptions.CultureInvariant);
     }
 
     private static string ShortHash(
