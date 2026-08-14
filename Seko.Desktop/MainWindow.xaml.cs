@@ -9,6 +9,7 @@ using Microsoft.Win32;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Desktop.Services;
 using Seko.Infrastructure.Agent;
 using Seko.Infrastructure.Workspaces;
 
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _requestCancellationSource;
 
     private bool _isSending;
+    private bool _restartScheduled;
 
     public MainWindow()
     {
@@ -86,17 +88,20 @@ public partial class MainWindow : Window
             });
 
         UpdateWorkspaceUi();
+
         SetAgentStateReady();
 
         Loaded += (_, _) =>
         {
             MessageInput.Focus();
+
             ScrollConversationToBottom();
         };
 
         Closing += (_, _) =>
         {
             _requestCancellationSource?.Cancel();
+
             SaveWorkspaceState();
         };
     }
@@ -123,7 +128,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        e.Handled = true;
+        e.Handled =
+            true;
 
         await SendCurrentMessageAsync();
     }
@@ -132,6 +138,11 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
+        if (_restartScheduled)
+        {
+            return;
+        }
+
         if (_requestCancellationSource is null
             || _requestCancellationSource.IsCancellationRequested)
         {
@@ -160,7 +171,8 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        if (_isSending)
+        if (_isSending
+            || _restartScheduled)
         {
             AddActivityLine(
                 "Stop the current task before switching workspaces.");
@@ -250,7 +262,8 @@ public partial class MainWindow : Window
         object sender,
         RoutedEventArgs e)
     {
-        if (_isSending)
+        if (_isSending
+            || _restartScheduled)
         {
             AddActivityLine(
                 "Stop the current task before switching workspaces.");
@@ -292,6 +305,7 @@ public partial class MainWindow : Window
         SaveWorkspaceState();
 
         _conversation.Clear();
+
         _activityEntries.Clear();
 
         ActivityPanel.Visibility =
@@ -315,7 +329,7 @@ public partial class MainWindow : Window
         Workspace workspace)
     {
         var agent =
-            new OllamaAgent(
+            new SekoSelfUpdatingAgent(
                 workspace);
 
         if (agent
@@ -440,7 +454,8 @@ public partial class MainWindow : Window
 
     private async Task SendCurrentMessageAsync()
     {
-        if (_isSending)
+        if (_isSending
+            || _restartScheduled)
         {
             return;
         }
@@ -454,7 +469,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        _isSending = true;
+        _isSending =
+            true;
 
         var cancellationSource =
             new CancellationTokenSource();
@@ -494,6 +510,13 @@ public partial class MainWindow : Window
 
             AddConversationMessage(
                 response);
+
+            if (activeAgent
+                is IRestartAwareAgent restartAwareAgent
+                && restartAwareAgent.RestartRequested)
+            {
+                await RestartAfterSelfUpdateAsync();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -547,24 +570,118 @@ public partial class MainWindow : Window
             _isSending =
                 false;
 
-            MessageInput.IsEnabled =
-                true;
+            if (!_restartScheduled)
+            {
+                MessageInput.IsEnabled =
+                    true;
 
-            StopAgentButton.IsEnabled =
-                true;
+                StopAgentButton.IsEnabled =
+                    true;
 
-            StopAgentButton.Content =
-                "Stop";
+                StopAgentButton.Content =
+                    "Stop";
 
-            StopAgentButton.Visibility =
-                Visibility.Collapsed;
+                StopAgentButton.Visibility =
+                    Visibility.Collapsed;
 
-            SetAgentStateReady();
+                SetAgentStateReady();
 
-            MessageInput.Focus();
+                MessageInput.Focus();
+            }
 
             ScrollConversationToBottom();
         }
+    }
+
+    private async Task RestartAfterSelfUpdateAsync()
+    {
+        if (_restartScheduled)
+        {
+            return;
+        }
+
+        _restartScheduled =
+            true;
+
+        MessageInput.IsEnabled =
+            false;
+
+        StopAgentButton.IsEnabled =
+            false;
+
+        StopAgentButton.Visibility =
+            Visibility.Collapsed;
+
+        ActivityPanel.Visibility =
+            Visibility.Visible;
+
+        ActivityHeaderText.Text =
+            "Restarting";
+
+        AgentStateText.Text =
+            "Restarting";
+
+        AgentStateDot.Fill =
+            FindResource(
+                "AccentStrongBrush")
+            as Brush;
+
+        AddActivityLine(
+            "Preparing restart helper…");
+
+        var scheduled =
+            SekoRestartService.TryScheduleRestart(
+                _activeWorkspace.RootPath,
+                Environment.ProcessId,
+                out var error);
+
+        if (!scheduled)
+        {
+            _restartScheduled =
+                false;
+
+            AddActivityLine(
+                "Restart could not be scheduled.");
+
+            ActivityHeaderText.Text =
+                "Needs attention";
+
+            AddConversationMessage(
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.Assistant,
+
+                    Content =
+                        "The update is committed, but I couldn't schedule my restart.\n\n" +
+                        error
+                });
+
+            return;
+        }
+
+        AddActivityLine(
+            "Restart helper ready.");
+
+        AddActivityLine(
+            "Closing current Seko…");
+
+        AddConversationMessage(
+            new ChatMessage
+            {
+                Role =
+                    MessageRole.Assistant,
+
+                Content =
+                    "Update complete. Restarting into the new build…"
+            });
+
+        ScrollConversationToBottom();
+
+        await Task.Delay(
+            1500);
+
+        Application.Current.Shutdown();
     }
 
     private void BeginAgentRun()
@@ -630,7 +747,7 @@ public partial class MainWindow : Window
         _activityEntries.Add(
             message);
 
-        while (_activityEntries.Count > 6)
+        while (_activityEntries.Count > 7)
         {
             _activityEntries.RemoveAt(
                 0);

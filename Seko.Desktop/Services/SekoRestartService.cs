@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 
 namespace Seko.Desktop.Services;
 
@@ -19,32 +20,81 @@ internal static class SekoRestartService
                 Path.GetFullPath(
                     repositoryRoot);
 
-            var desktopProject =
+            var projectPath =
                 Path.Combine(
                     root,
                     "Seko.Desktop",
                     "Seko.Desktop.csproj");
 
             if (!File.Exists(
-                    desktopProject))
+                    projectPath))
             {
                 error =
-                    "The Seko desktop project could not be found.";
+                    "Seko.Desktop.csproj could not be found.";
 
                 return false;
             }
 
-            var escapedRoot =
-                root.Replace(
-                    "'",
-                    "''");
+            var localAppData =
+                Environment.GetFolderPath(
+                    Environment.SpecialFolder.LocalApplicationData);
 
-            var command =
-                $"""
-                Wait-Process -Id {currentProcessId} -ErrorAction SilentlyContinue;
-                Set-Location -LiteralPath '{escapedRoot}';
-                dotnet run --project '.\Seko.Desktop\Seko.Desktop.csproj'
+            var updaterDirectory =
+                Path.Combine(
+                    localAppData,
+                    "Seko",
+                    "Updater");
+
+            Directory.CreateDirectory(
+                updaterDirectory);
+
+            var scriptPath =
+                Path.Combine(
+                    updaterDirectory,
+                    $"restart-{Guid.NewGuid():N}.ps1");
+
+            var script =
+                """
+                param(
+                    [Parameter(Mandatory=$true)]
+                    [int]$OldProcessId,
+
+                    [Parameter(Mandatory=$true)]
+                    [string]$RepositoryRoot,
+
+                    [Parameter(Mandatory=$true)]
+                    [string]$ScriptPath
+                )
+
+                try
+                {
+                    Wait-Process -Id $OldProcessId -ErrorAction SilentlyContinue
+
+                    Start-Sleep -Milliseconds 350
+
+                    Start-Process `
+                        -FilePath "dotnet" `
+                        -ArgumentList @(
+                            "run",
+                            "--project",
+                            ".\Seko.Desktop\Seko.Desktop.csproj"
+                        ) `
+                        -WorkingDirectory $RepositoryRoot `
+                        -WindowStyle Hidden
+                }
+                finally
+                {
+                    Remove-Item `
+                        -LiteralPath $ScriptPath `
+                        -Force `
+                        -ErrorAction SilentlyContinue
+                }
                 """;
+
+            File.WriteAllText(
+                scriptPath,
+                script,
+                new UTF8Encoding(false));
 
             var startInfo =
                 new ProcessStartInfo
@@ -56,10 +106,7 @@ internal static class SekoRestartService
                         false,
 
                     CreateNoWindow =
-                        true,
-
-                    WindowStyle =
-                        ProcessWindowStyle.Hidden
+                        true
                 };
 
             startInfo.ArgumentList.Add(
@@ -72,25 +119,43 @@ internal static class SekoRestartService
                 "-NonInteractive");
 
             startInfo.ArgumentList.Add(
-                "-WindowStyle");
+                "-ExecutionPolicy");
 
             startInfo.ArgumentList.Add(
-                "Hidden");
+                "Bypass");
 
             startInfo.ArgumentList.Add(
-                "-Command");
+                "-File");
 
             startInfo.ArgumentList.Add(
-                command);
+                scriptPath);
 
-            var process =
+            startInfo.ArgumentList.Add(
+                "-OldProcessId");
+
+            startInfo.ArgumentList.Add(
+                currentProcessId.ToString());
+
+            startInfo.ArgumentList.Add(
+                "-RepositoryRoot");
+
+            startInfo.ArgumentList.Add(
+                root);
+
+            startInfo.ArgumentList.Add(
+                "-ScriptPath");
+
+            startInfo.ArgumentList.Add(
+                scriptPath);
+
+            var helper =
                 Process.Start(
                     startInfo);
 
-            if (process is null)
+            if (helper is null)
             {
                 error =
-                    "Windows could not start the Seko restart helper.";
+                    "Windows could not launch the restart helper.";
 
                 return false;
             }
