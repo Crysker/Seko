@@ -9,7 +9,8 @@ namespace Seko.Infrastructure.Agent;
 
 public sealed class OllamaAgent : IAgent
 {
-    private const int MaximumToolRounds = 12;
+    private const int MaximumToolRounds = 8;
+    private const int MaximumConversationMessages = 10;
 
     private static readonly HttpClient HttpClient =
         new()
@@ -61,6 +62,16 @@ public sealed class OllamaAgent : IAgent
                 ?.Content
             ?? "Seko task";
 
+        var workspaceToolsRequired =
+            RequiresWorkspaceTools(
+                userRequest);
+
+        var toolRetryUsed =
+            false;
+
+        var anyToolCallExecuted =
+            false;
+
         for (var round = 0;
              round < MaximumToolRounds;
              round++)
@@ -70,6 +81,7 @@ public sealed class OllamaAgent : IAgent
             using var responseDocument =
                 await SendChatRequestAsync(
                     messages,
+                    workspaceToolsRequired,
                     cancellationToken);
 
             var root =
@@ -84,19 +96,18 @@ public sealed class OllamaAgent : IAgent
             }
 
             var content =
-                messageElement.TryGetProperty(
-                    "content",
-                    out var contentElement)
-                && contentElement.ValueKind == JsonValueKind.String
-                    ? contentElement.GetString()
-                      ?? string.Empty
-                    : string.Empty;
+                GetOptionalString(
+                    messageElement,
+                    "content");
 
             var assistantMessage =
                 new JsonObject
                 {
-                    ["role"] = "assistant",
-                    ["content"] = content
+                    ["role"] =
+                        "assistant",
+
+                    ["content"] =
+                        content
                 };
 
             var hasToolCalls =
@@ -122,6 +133,39 @@ public sealed class OllamaAgent : IAgent
 
             if (!hasToolCalls)
             {
+                if (workspaceToolsRequired
+                    && !anyToolCallExecuted
+                    && !toolRetryUsed)
+                {
+                    toolRetryUsed =
+                        true;
+
+                    messages.Add(
+                        new JsonObject
+                        {
+                            ["role"] =
+                                "user",
+
+                            ["content"] =
+                                """
+                                This request requires workspace access.
+
+                                You have real workspace tools available.
+
+                                Use them now.
+
+                                Do not explain how the task could be done manually.
+                                Do not claim that you cannot access files.
+                                Do not ask me to paste source code unless a tool reports
+                                that the required file does not exist.
+
+                                Start with only the tools actually needed for this task.
+                                """
+                        });
+
+                    continue;
+                }
+
                 var gitResult =
                     await _toolHost.TryAutoCommitAsync(
                         userRequest,
@@ -145,12 +189,17 @@ public sealed class OllamaAgent : IAgent
                         content))
                 {
                     content =
-                        "Done.";
+                        workspaceToolsRequired
+                            ? "I couldn't complete the workspace task with the available tools."
+                            : "Done.";
                 }
 
                 return CreateAssistantMessage(
                     content.Trim());
             }
+
+            anyToolCallExecuted =
+                true;
 
             foreach (
                 var toolCall
@@ -164,14 +213,9 @@ public sealed class OllamaAgent : IAgent
                 }
 
                 var toolName =
-                    functionElement.TryGetProperty(
-                        "name",
-                        out var nameElement)
-                    && nameElement.ValueKind
-                        == JsonValueKind.String
-                        ? nameElement.GetString()
-                          ?? string.Empty
-                        : string.Empty;
+                    GetOptionalString(
+                        functionElement,
+                        "name");
 
                 if (string.IsNullOrWhiteSpace(
                         toolName))
@@ -203,9 +247,14 @@ public sealed class OllamaAgent : IAgent
                 messages.Add(
                     new JsonObject
                     {
-                        ["role"] = "tool",
-                        ["tool_name"] = toolName,
-                        ["content"] = result
+                        ["role"] =
+                            "tool",
+
+                        ["tool_name"] =
+                            toolName,
+
+                        ["content"] =
+                            result
                     });
             }
         }
@@ -217,12 +266,14 @@ public sealed class OllamaAgent : IAgent
 
     private async Task<JsonDocument> SendChatRequestAsync(
         JsonArray messages,
+        bool workspaceToolsRequired,
         CancellationToken cancellationToken)
     {
         var request =
             new JsonObject
             {
-                ["model"] = _model,
+                ["model"] =
+                    _model,
 
                 ["messages"] =
                     messages.DeepClone(),
@@ -230,17 +281,50 @@ public sealed class OllamaAgent : IAgent
                 ["tools"] =
                     _toolHost.CreateToolDefinitions(),
 
-                ["stream"] = false,
+                ["stream"] =
+                    false,
 
-                ["think"] = false,
+                /*
+                    Qwen3 thinking mode is deliberately disabled here.
 
-                ["keep_alive"] = "10m",
+                    For normal Seko interaction and tool use, direct tool calling
+                    is much faster on our local hardware.
+
+                    We can later add a separate "Deep Think" mode for difficult
+                    architecture/research problems instead of paying this latency
+                    on every workspace request.
+                */
+                ["think"] =
+                    false,
+
+                /*
+                    Keep the model loaded between requests so subsequent messages
+                    do not repeatedly pay the model-load startup cost.
+                */
+                ["keep_alive"] =
+                    "30m",
 
                 ["options"] =
                     new JsonObject
                     {
-                        ["temperature"] = 0.2,
-                        ["num_ctx"] = 8192
+                        ["temperature"] =
+                            workspaceToolsRequired
+                                ? 0.1
+                                : 0.35,
+
+                        /*
+                            Large enough for our current source-code work without
+                            running the full 8K context for every small request.
+                        */
+                        ["num_ctx"] =
+                            6144,
+
+                        /*
+                            Prevent unnecessarily long conversational responses.
+                            Tool calls themselves are unaffected.
+                        */
+                        ["num_predict"] =
+                            1024
                     }
             };
 
@@ -288,14 +372,18 @@ public sealed class OllamaAgent : IAgent
             {
                 new JsonObject
                 {
-                    ["role"] = "system",
-                    ["content"] = BuildSystemPrompt()
+                    ["role"] =
+                        "system",
+
+                    ["content"] =
+                        BuildSystemPrompt()
                 }
             };
 
         foreach (
             var message
-            in conversation.TakeLast(20))
+            in conversation.TakeLast(
+                MaximumConversationMessages))
         {
             if (message.Role == MessageRole.System)
             {
@@ -322,107 +410,133 @@ public sealed class OllamaAgent : IAgent
     {
         return
             $$"""
-            You are Seko, Serkan's personal local AI agent.
-
-            You run locally on his Windows computer through Ollama.
+            You are Seko, Serkan's local personal AI agent.
 
             ACTIVE WORKSPACE
             Name: {{_workspace.Name}}
             Root: {{_workspace.RootPath}}
 
-            PERSONALITY
-            Be calm, capable, friendly and slightly playful.
-            Do not sound like a generic corporate chatbot.
-            For normal conversation, respond naturally.
-            For tasks, focus on accomplishing the task.
+            Be calm, capable, concise and slightly playful.
 
-            PURPOSE
-            You are intended to become a general-purpose personal computer agent.
-
-            You will eventually help with:
-            - software development
-            - Unity and game development
-            - UX/UI design
-            - Blender and 3D workflows
-            - web development
-            - research
-            - travel
-            - productivity
-            - voice
-            - visual understanding
-            - computer automation
-            - managing projects
-            - improving Seko itself
-
-            CURRENT TOOLS
-            You now have tools for:
+            You have real workspace tools for:
             - listing files
-            - reading source files
-            - writing source files
-            - focused text replacement
-            - running dotnet build
+            - reading files
+            - writing files
+            - replacing text
+            - building .NET projects
             - checking Git status
-            - inspecting Git diffs
+            - viewing Git diffs
 
-            You are inside an agent loop.
+            TOOL RULE
+            If the user explicitly asks you to inspect, edit, implement, fix,
+            create, remove, redesign, build or otherwise work on something in
+            the active workspace, use tools instead of explaining how to do it.
 
-            You may call tools multiple times before giving your final response.
-
-            Never claim that you inspected, changed, built or checked something
-            unless the corresponding tool actually succeeded.
-
-            WORKSPACE SECURITY
-            Only use provided tools to access the active workspace.
-
-            Never attempt to escape the workspace.
-
-            Never seek:
-            - passwords
-            - API keys
-            - credentials
-            - private keys
-            - secret files
+            Never say you cannot access workspace files while these tools exist.
+            Never invent file contents or claim an action succeeded unless its
+            tool succeeded.
 
             SELF-DEVELOPMENT
-            If the active workspace is Seko's own repository, you may modify your
-            own source code when Serkan explicitly asks you to implement, fix,
-            redesign or change something.
+            If this workspace is Seko's own repository, you may edit your own
+            source when explicitly asked.
 
-            A normal discussion about an idea is NOT permission to edit files.
-
-            When changing code:
+            Before modifying code:
             1. Check Git status.
-            2. Inspect the relevant files.
-            3. Understand the existing implementation.
-            4. Make the smallest sensible change.
-            5. Prefer replace_text for focused edits.
-            6. Use write_file for new files or deliberate full rewrites.
-            7. Inspect the result when useful.
-            8. Run build_project after C#, XAML or project-file changes.
-            9. If the build fails, inspect the compiler output and repair your change.
-            10. Do not endlessly retry.
-            11. Never claim the build succeeded unless build_project reports success.
+            2. Inspect only the relevant files.
+            3. Make the smallest sensible change.
+            4. Build after C#, XAML or project-file changes.
+            5. Repair build errors you introduced.
+            6. Do not endlessly retry.
 
-            GIT SAFETY
-            The host records whether Git was clean before your task began.
+            The host automatically blocks modifications when unrelated
+            uncommitted changes existed before the task and may create a local
+            Git commit after a successful change.
 
-            If uncommitted changes already existed before your task, modifications
-            are blocked so you cannot accidentally overwrite or commit Serkan's
-            unfinished work.
+            Never push to GitHub automatically.
 
-            Files you modify through your tools are tracked.
-
-            After a successful code change and successful build, the host may create
-            a LOCAL Git commit containing only files you changed.
-
-            You must not push to GitHub automatically.
-
-            IMPORTANT
-            You may improve Seko when explicitly asked.
-
-            You may never silently expand your own permissions, disable safeguards,
-            access blocked files, or bypass capability restrictions.
+            SECURITY
+            Stay inside the active workspace.
+            Never seek passwords, API keys, credentials or private keys.
+            Never bypass safeguards or silently expand your own permissions.
             """;
+    }
+
+    private static bool RequiresWorkspaceTools(
+        string request)
+    {
+        var normalized =
+            request.ToLowerInvariant();
+
+        var actionWords =
+            new[]
+            {
+                "inspect",
+                "implement",
+                "modify",
+                "change",
+                "edit",
+                "fix",
+                "create",
+                "add",
+                "remove",
+                "delete",
+                "rename",
+                "redesign",
+                "refactor",
+                "build",
+                "compile",
+                "update",
+                "read"
+            };
+
+        var workspaceWords =
+            new[]
+            {
+                "code",
+                "codebase",
+                "file",
+                "folder",
+                "workspace",
+                "project",
+                "repository",
+                "repo",
+                "git",
+                "ui",
+                "interface",
+                "sidebar",
+                "window",
+                "xaml",
+                "c#",
+                ".cs",
+                ".xaml",
+                ".csproj",
+                ".sln",
+                "yourself",
+                "your own"
+            };
+
+        return
+            actionWords.Any(
+                normalized.Contains)
+
+            && workspaceWords.Any(
+                normalized.Contains);
+    }
+
+    private static string GetOptionalString(
+        JsonElement element,
+        string propertyName)
+    {
+        if (!element.TryGetProperty(
+                propertyName,
+                out var property)
+            || property.ValueKind != JsonValueKind.String)
+        {
+            return string.Empty;
+        }
+
+        return property.GetString()
+               ?? string.Empty;
     }
 
     private static ChatMessage CreateAssistantMessage(
@@ -430,8 +544,11 @@ public sealed class OllamaAgent : IAgent
     {
         return new ChatMessage
         {
-            Role = MessageRole.Assistant,
-            Content = content
+            Role =
+                MessageRole.Assistant,
+
+            Content =
+                content
         };
     }
 }
