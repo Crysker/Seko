@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Seko.Core.Workspaces;
 
 namespace Seko.Infrastructure.Agent;
@@ -39,6 +40,67 @@ public sealed class SekoToolHost
             "node_modules"
         };
 
+    private static readonly HashSet<string> SearchStopWords =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "a",
+            "an",
+            "and",
+            "the",
+            "to",
+            "of",
+            "for",
+            "in",
+            "on",
+            "at",
+            "with",
+            "from",
+            "my",
+            "your",
+            "you",
+            "this",
+            "that",
+            "it",
+            "its",
+            "please",
+            "change",
+            "update",
+            "modify",
+            "edit",
+            "make",
+            "set",
+            "replace",
+            "fix",
+            "implement",
+            "add",
+            "remove",
+            "slightly",
+            "more",
+            "less",
+            "smaller",
+            "larger",
+            "compact",
+            "current",
+            "new"
+        };
+
+    private static readonly Regex SearchTokenRegex =
+        new(
+            @"[A-Za-z0-9_.#-]+",
+            RegexOptions.Compiled);
+
+    private static readonly Regex VersionRegex =
+        new(
+            @"\bv?\d+\.\d+(?:\.\d+){0,2}(?:[-+][0-9A-Za-z.-]+)?\b",
+            RegexOptions.Compiled
+            | RegexOptions.IgnoreCase);
+
+    private static readonly Regex DisplayVersionRegex =
+        new(
+            @"(?:Text\s*=\s*[""']|>\s*)v?\d+\.\d+(?:\.\d+){0,2}",
+            RegexOptions.Compiled
+            | RegexOptions.IgnoreCase);
+
     private readonly Workspace _workspace;
     private readonly string _workspaceRoot;
 
@@ -50,6 +112,13 @@ public sealed class SekoToolHost
 
     private bool _buildWasRun;
     private bool _lastBuildSucceeded;
+
+    /*
+        These generations prevent an old successful build from validating
+        source code that was modified afterward.
+    */
+    private int _buildRelevantModificationGeneration;
+    private int _lastSuccessfulBuildGeneration = -1;
 
     public SekoToolHost(
         Workspace workspace)
@@ -72,6 +141,12 @@ public sealed class SekoToolHost
 
         _lastBuildSucceeded =
             false;
+
+        _buildRelevantModificationGeneration =
+            0;
+
+        _lastSuccessfulBuildGeneration =
+            -1;
 
         var gitCheck =
             await RunProcessAsync(
@@ -120,6 +195,62 @@ public sealed class SekoToolHost
         return new JsonArray
         {
             CreateFunctionTool(
+                "search_workspace",
+                """
+                Search the entire active workspace for a concept, feature, UI element,
+                symbol, version number or text.
+
+                This searches BOTH filenames and textual file contents, ranks the most
+                relevant results and returns matching line numbers with small snippets.
+
+                Prefer this when the user describes WHAT they want rather than giving an
+                exact filename.
+
+                Examples:
+                - version
+                - activity panel
+                - sidebar
+                - login button
+                - player health
+                - model selector
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["query"] =
+                                StringProperty(
+                                    "Concept, feature, symbol or text to locate in the workspace."),
+
+                            ["max_results"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Maximum ranked results to return. Usually 6 to 12.",
+
+                                    ["minimum"] =
+                                        1,
+
+                                    ["maximum"] =
+                                        20
+                                }
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "query"
+                        }
+                }),
+
+            CreateFunctionTool(
                 "find_files",
                 "Find files by file name inside the active workspace. Prefer this when you know a file name but not its relative path.",
                 new JsonObject
@@ -144,7 +275,7 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "find_text",
-                "Find text inside one known file and return only the matching lines plus nearby context. Prefer this over read_file for focused edits.",
+                "Find text inside one known file and return matching lines plus nearby context. Prefer this over read_file for focused inspection.",
                 new JsonObject
                 {
                     ["type"] =
@@ -188,7 +319,7 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "list_files",
-                "List files and directories inside a specific workspace directory. Use this for directory overviews, not for locating one known filename.",
+                "List files and directories inside a specific workspace directory. Use this for directory overviews, not for locating one conceptual target.",
                 new JsonObject
                 {
                     ["type"] =
@@ -273,7 +404,13 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "replace_text",
-                "Replace exactly one matching section in an existing source file. Prefer this for focused edits.",
+                """
+                Replace exactly one matching section in an existing source file.
+
+                old_text must be copied from actual workspace evidence and must occur
+                exactly once. If OLD_TEXT_NOT_FOUND is returned, inspect the real source
+                again instead of repeating the same failed replacement.
+                """,
                 new JsonObject
                 {
                     ["type"] =
@@ -306,7 +443,13 @@ public sealed class SekoToolHost
 
             CreateFunctionTool(
                 "build_project",
-                "Run dotnet build for the active .NET workspace.",
+                """
+                Build the active .NET workspace.
+
+                This tool automatically prefers a solution file at the workspace root.
+                The model does NOT need to guess or specify a .csproj when an appropriate
+                solution exists.
+                """,
                 EmptyParameters()),
 
             CreateFunctionTool(
@@ -340,6 +483,11 @@ public sealed class SekoToolHost
 
             return toolName switch
             {
+                "search_workspace" =>
+                    await SearchWorkspaceAsync(
+                        arguments,
+                        cancellationToken),
+
                 "find_files" =>
                     FindFiles(
                         arguments),
@@ -384,6 +532,10 @@ public sealed class SekoToolHost
                     $"ERROR: Unknown tool '{toolName}'."
             };
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception exception)
         {
             return
@@ -419,10 +571,12 @@ public sealed class SekoToolHost
 
         if (requiresBuild
             && (!_buildWasRun
-                || !_lastBuildSucceeded))
+                || !_lastBuildSucceeded
+                || _lastSuccessfulBuildGeneration
+                    < _buildRelevantModificationGeneration))
         {
             return
-                "Git: changes were not committed because a successful build has not been verified.";
+                "Git: changes were not committed because a successful build after the final build-relevant modification has not been verified.";
         }
 
         var filesToStage =
@@ -517,8 +671,294 @@ public sealed class SekoToolHost
 
         return
             $"Git: committed locally as " +
-            $"{hashResult.Output.Trim()} — " +
+            $"{hashResult.Output.Trim()} - " +
             commitMessage;
+    }
+
+    private async Task<string> SearchWorkspaceAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var rawQuery =
+            GetString(
+                arguments,
+                "query")
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                rawQuery))
+        {
+            return
+                "ERROR: Workspace search query cannot be empty.";
+        }
+
+        var maximumResults =
+            Math.Clamp(
+                GetOptionalInteger(
+                    arguments,
+                    "max_results",
+                    10),
+                1,
+                20);
+
+        var queryTerms =
+            ExtractSearchTerms(
+                rawQuery);
+
+        var normalizedQuery =
+            NormalizeSearchText(
+                rawQuery);
+
+        var compactQuery =
+            CompactText(
+                rawQuery);
+
+        var versionIntent =
+            rawQuery.Contains(
+                "version",
+                StringComparison.OrdinalIgnoreCase)
+            || VersionRegex.IsMatch(
+                rawQuery);
+
+        const int maximumFilesToScan =
+            2500;
+
+        const long maximumSearchFileSize =
+            400_000;
+
+        var results =
+            new List<WorkspaceSearchResult>();
+
+        var scannedFiles =
+            0;
+
+        foreach (var file
+                 in EnumerateWorkspaceFiles(
+                     maximumFilesToScan))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (IsSensitiveFile(
+                    file))
+            {
+                continue;
+            }
+
+            if (!IsSearchableFile(
+                    file))
+            {
+                continue;
+            }
+
+            var fileInfo =
+                new FileInfo(
+                    file);
+
+            if (!fileInfo.Exists
+                || fileInfo.Length
+                    > maximumSearchFileSize)
+            {
+                continue;
+            }
+
+            scannedFiles++;
+
+            var relativePath =
+                ToRelativePath(
+                    file);
+
+            var fileName =
+                Path.GetFileName(
+                    file);
+
+            var fileScore =
+                ScoreFileName(
+                    fileName,
+                    relativePath,
+                    normalizedQuery,
+                    compactQuery,
+                    queryTerms);
+
+            string[] lines;
+
+            try
+            {
+                lines =
+                    await File.ReadAllLinesAsync(
+                        file,
+                        cancellationToken);
+            }
+            catch
+            {
+                continue;
+            }
+
+            var lineMatches =
+                new List<WorkspaceLineMatch>();
+
+            for (var lineIndex = 0;
+                 lineIndex < lines.Length;
+                 lineIndex++)
+            {
+                var line =
+                    lines[lineIndex];
+
+                var score =
+                    ScoreContentLine(
+                        line,
+                        normalizedQuery,
+                        compactQuery,
+                        queryTerms,
+                        versionIntent);
+
+                if (score <= 0)
+                {
+                    continue;
+                }
+
+                lineMatches.Add(
+                    new WorkspaceLineMatch(
+                        lineIndex,
+                        score));
+            }
+
+            if (fileScore <= 0
+                && lineMatches.Count == 0)
+            {
+                continue;
+            }
+
+            var strongestMatches =
+                lineMatches
+                    .OrderByDescending(
+                        match => match.Score)
+                    .ThenBy(
+                        match => match.LineIndex)
+                    .Take(3)
+                    .ToList();
+
+            var contentScore =
+                strongestMatches.Sum(
+                    match => match.Score);
+
+            var scoreTotal =
+                fileScore
+                + contentScore;
+
+            results.Add(
+                new WorkspaceSearchResult(
+                    relativePath,
+                    scoreTotal,
+                    fileScore,
+                    lines,
+                    strongestMatches));
+        }
+
+        var ranked =
+            results
+                .OrderByDescending(
+                    result => result.Score)
+                .ThenBy(
+                    result => result.RelativePath,
+                    StringComparer.OrdinalIgnoreCase)
+                .Take(
+                    maximumResults)
+                .ToList();
+
+        if (ranked.Count == 0)
+        {
+            return
+                $"No relevant accessible workspace matches were found for '{rawQuery}'. " +
+                $"Scanned {scannedFiles} searchable files.";
+        }
+
+        var builder =
+            new StringBuilder();
+
+        builder.AppendLine(
+            $"WORKSPACE SEARCH: {rawQuery}");
+
+        builder.AppendLine(
+            $"SCANNED FILES: {scannedFiles}");
+
+        builder.AppendLine(
+            $"RESULTS: {ranked.Count}");
+
+        builder.AppendLine();
+
+        for (var resultIndex = 0;
+             resultIndex < ranked.Count;
+             resultIndex++)
+        {
+            var result =
+                ranked[resultIndex];
+
+            builder.AppendLine(
+                $"#{resultIndex + 1} {result.RelativePath}");
+
+            builder.AppendLine(
+                $"RELEVANCE SCORE: {result.Score}");
+
+            if (result.LineMatches.Count == 0)
+            {
+                builder.AppendLine(
+                    "MATCH: filename/path");
+
+                builder.AppendLine();
+
+                continue;
+            }
+
+            foreach (var lineMatch
+                     in result.LineMatches)
+            {
+                var start =
+                    Math.Max(
+                        0,
+                        lineMatch.LineIndex - 2);
+
+                var end =
+                    Math.Min(
+                        result.Lines.Length - 1,
+                        lineMatch.LineIndex + 2);
+
+                builder.AppendLine(
+                    $"--- Match at line {lineMatch.LineIndex + 1} ---");
+
+                for (var index = start;
+                     index <= end;
+                     index++)
+                {
+                    var marker =
+                        index == lineMatch.LineIndex
+                            ? ">"
+                            : " ";
+
+                    builder.Append(
+                        marker);
+
+                    builder.Append(
+                        (index + 1)
+                        .ToString()
+                        .PadLeft(5));
+
+                    builder.Append(
+                        " | ");
+
+                    builder.AppendLine(
+                        TruncateLine(
+                            result.Lines[index],
+                            300));
+                }
+
+                builder.AppendLine();
+            }
+        }
+
+        return
+            builder
+                .ToString()
+                .TrimEnd();
     }
 
     private string FindFiles(
@@ -555,12 +995,11 @@ public sealed class SekoToolHost
             var current =
                 queue.Dequeue();
 
-            foreach (
-                var directory
-                in GetDirectoriesSafe(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+            foreach (var directory
+                     in GetDirectoriesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
             {
                 var directoryName =
                     Path.GetFileName(
@@ -576,12 +1015,11 @@ public sealed class SekoToolHost
                     directory);
             }
 
-            foreach (
-                var file
-                in GetFilesSafe(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+            foreach (var file
+                     in GetFilesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
             {
                 if (IsSensitiveFile(
                         file))
@@ -604,7 +1042,8 @@ public sealed class SekoToolHost
                     ToRelativePath(
                         file));
 
-                if (results.Count >= maximumResults)
+                if (results.Count
+                    >= maximumResults)
                 {
                     break;
                 }
@@ -645,14 +1084,11 @@ public sealed class SekoToolHost
         }
 
         var contextLines =
-            GetOptionalInteger(
-                arguments,
-                "context_lines",
-                4);
-
-        contextLines =
             Math.Clamp(
-                contextLines,
+                GetOptionalInteger(
+                    arguments,
+                    "context_lines",
+                    4),
                 0,
                 10);
 
@@ -723,7 +1159,8 @@ public sealed class SekoToolHost
 
         builder.AppendLine();
 
-        foreach (var matchIndex in matchingLines)
+        foreach (var matchIndex
+                 in matchingLines)
         {
             var start =
                 Math.Max(
@@ -765,9 +1202,10 @@ public sealed class SekoToolHost
             builder.AppendLine();
         }
 
-        return builder
-            .ToString()
-            .TrimEnd();
+        return
+            builder
+                .ToString()
+                .TrimEnd();
     }
 
     private string ListFiles(
@@ -812,12 +1250,11 @@ public sealed class SekoToolHost
             var current =
                 queue.Dequeue();
 
-            foreach (
-                var childDirectory
-                in GetDirectoriesSafe(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+            foreach (var childDirectory
+                     in GetDirectoriesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
             {
                 var directoryName =
                     Path.GetFileName(
@@ -840,23 +1277,24 @@ public sealed class SekoToolHost
                         childDirectory);
                 }
 
-                if (results.Count >= maximumEntries)
+                if (results.Count
+                    >= maximumEntries)
                 {
                     break;
                 }
             }
 
-            if (results.Count >= maximumEntries)
+            if (results.Count
+                >= maximumEntries)
             {
                 break;
             }
 
-            foreach (
-                var file
-                in GetFilesSafe(current)
-                    .OrderBy(
-                        path => path,
-                        StringComparer.OrdinalIgnoreCase))
+            foreach (var file
+                     in GetFilesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
             {
                 if (IsSensitiveFile(
                         file))
@@ -869,7 +1307,8 @@ public sealed class SekoToolHost
                     ToRelativePath(
                         file));
 
-                if (results.Count >= maximumEntries)
+                if (results.Count
+                    >= maximumEntries)
                 {
                     break;
                 }
@@ -976,10 +1415,27 @@ public sealed class SekoToolHost
                 directory);
         }
 
-        await File.WriteAllTextAsync(
+        if (File.Exists(
+                fullPath))
+        {
+            var currentContent =
+                await File.ReadAllTextAsync(
+                    fullPath,
+                    cancellationToken);
+
+            if (string.Equals(
+                    currentContent,
+                    content,
+                    StringComparison.Ordinal))
+            {
+                return
+                    $"No change needed in {NormalizeRelativePath(relativePath)}.";
+            }
+        }
+
+        await WritePreservingUtf8BomAsync(
             fullPath,
             content,
-            new UTF8Encoding(false),
             cancellationToken);
 
         var normalizedPath =
@@ -988,7 +1444,7 @@ public sealed class SekoToolHost
                     _workspaceRoot,
                     fullPath));
 
-        _changedFiles.Add(
+        RegisterChangedFile(
             normalizedPath);
 
         return
@@ -1050,13 +1506,31 @@ public sealed class SekoToolHost
         if (occurrences == 0)
         {
             return
-                "ERROR: old_text was not found. Use find_text or read_file before editing.";
+                """
+                ERROR: OLD_TEXT_NOT_FOUND.
+
+                The supplied old_text does not exactly match the current file.
+
+                Re-inspect the relevant source using find_text or search_workspace,
+                copy the real current text and retry with a corrected unique match.
+
+                Do not repeat the same failed replacement unchanged.
+                """;
         }
 
         if (occurrences > 1)
         {
             return
-                $"ERROR: old_text appears {occurrences} times. Use a more specific section.";
+                $"ERROR: old_text appears {occurrences} times. Inspect the surrounding source and use a more specific unique section.";
+        }
+
+        if (string.Equals(
+                oldText,
+                newText,
+                StringComparison.Ordinal))
+        {
+            return
+                $"No change needed in {NormalizeRelativePath(relativePath)}.";
         }
 
         var updatedContent =
@@ -1065,10 +1539,9 @@ public sealed class SekoToolHost
                 newText,
                 StringComparison.Ordinal);
 
-        await File.WriteAllTextAsync(
+        await WritePreservingUtf8BomAsync(
             fullPath,
             updatedContent,
-            new UTF8Encoding(false),
             cancellationToken);
 
         var normalizedPath =
@@ -1077,7 +1550,7 @@ public sealed class SekoToolHost
                     _workspaceRoot,
                     fullPath));
 
-        _changedFiles.Add(
+        RegisterChangedFile(
             normalizedPath);
 
         return
@@ -1135,7 +1608,14 @@ public sealed class SekoToolHost
         _lastBuildSucceeded =
             result.ExitCode == 0;
 
+        if (_lastBuildSucceeded)
+        {
+            _lastSuccessfulBuildGeneration =
+                _buildRelevantModificationGeneration;
+        }
+
         return
+            $"BUILD TARGET: {ToRelativePath(target)}\n" +
             $"BUILD EXIT CODE: {result.ExitCode}\n\n" +
             TrimOutput(
                 result.Output,
@@ -1203,6 +1683,19 @@ public sealed class SekoToolHost
             TrimOutput(
                 result.Output,
                 30_000);
+    }
+
+    private void RegisterChangedFile(
+        string normalizedPath)
+    {
+        _changedFiles.Add(
+            normalizedPath);
+
+        if (RequiresBuild(
+                normalizedPath))
+        {
+            _buildRelevantModificationGeneration++;
+        }
     }
 
     private void EnsureModificationAllowed()
@@ -1362,6 +1855,9 @@ public sealed class SekoToolHost
                     _workspaceRoot,
                     "*.sln",
                     SearchOption.TopDirectoryOnly)
+                .OrderBy(
+                    path => path,
+                    StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault();
 
         if (solution is not null)
@@ -1374,12 +1870,368 @@ public sealed class SekoToolHost
                 _workspaceRoot,
                 "*.csproj",
                 SearchOption.AllDirectories)
-            .FirstOrDefault(
+            .Where(
                 path =>
                     !PathContainsIgnoredDirectory(
                         Path.GetRelativePath(
                             _workspaceRoot,
-                            path)));
+                            path)))
+            .OrderBy(
+                path => path,
+                StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private IEnumerable<string> EnumerateWorkspaceFiles(
+        int maximumFiles)
+    {
+        var queue =
+            new Queue<string>();
+
+        queue.Enqueue(
+            _workspaceRoot);
+
+        var yielded =
+            0;
+
+        while (queue.Count > 0
+               && yielded < maximumFiles)
+        {
+            var current =
+                queue.Dequeue();
+
+            foreach (var directory
+                     in GetDirectoriesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
+            {
+                var directoryName =
+                    Path.GetFileName(
+                        directory);
+
+                if (IgnoredDirectories.Contains(
+                        directoryName))
+                {
+                    continue;
+                }
+
+                queue.Enqueue(
+                    directory);
+            }
+
+            foreach (var file
+                     in GetFilesSafe(current)
+                         .OrderBy(
+                             path => path,
+                             StringComparer.OrdinalIgnoreCase))
+            {
+                yield return file;
+
+                yielded++;
+
+                if (yielded
+                    >= maximumFiles)
+                {
+                    yield break;
+                }
+            }
+        }
+    }
+
+    private static bool IsSearchableFile(
+        string file)
+    {
+        var fileName =
+            Path.GetFileName(
+                file);
+
+        if (fileName.Equals(
+                ".gitignore",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return
+            AllowedExtensions.Contains(
+                Path.GetExtension(
+                    file));
+    }
+
+    private static int ScoreFileName(
+        string fileName,
+        string relativePath,
+        string normalizedQuery,
+        string compactQuery,
+        IReadOnlyList<string> terms)
+    {
+        var score =
+            0;
+
+        var normalizedFileName =
+            NormalizeSearchText(
+                fileName);
+
+        var normalizedPath =
+            NormalizeSearchText(
+                relativePath);
+
+        var compactFileName =
+            CompactText(
+                fileName);
+
+        if (normalizedQuery.Length >= 3
+            && normalizedFileName.Contains(
+                normalizedQuery,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            score +=
+                120;
+        }
+
+        if (compactQuery.Length >= 4
+            && compactFileName.Contains(
+                compactQuery,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            score +=
+                110;
+        }
+
+        foreach (var term
+                 in terms)
+        {
+            if (normalizedFileName.Contains(
+                    term,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                score +=
+                    35;
+            }
+            else if (normalizedPath.Contains(
+                         term,
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                score +=
+                    12;
+            }
+        }
+
+        return score;
+    }
+
+    private static int ScoreContentLine(
+        string line,
+        string normalizedQuery,
+        string compactQuery,
+        IReadOnlyList<string> terms,
+        bool versionIntent)
+    {
+        if (string.IsNullOrWhiteSpace(
+                line))
+        {
+            return 0;
+        }
+
+        var score =
+            0;
+
+        var normalizedLine =
+            NormalizeSearchText(
+                line);
+
+        var compactLine =
+            CompactText(
+                line);
+
+        if (normalizedQuery.Length >= 3
+            && normalizedLine.Contains(
+                normalizedQuery,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            score +=
+                140;
+        }
+
+        if (compactQuery.Length >= 4
+            && compactLine.Contains(
+                compactQuery,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            score +=
+                120;
+        }
+
+        var matchedTerms =
+            0;
+
+        foreach (var term
+                 in terms)
+        {
+            if (normalizedLine.Contains(
+                    term,
+                    StringComparison.OrdinalIgnoreCase)
+                || compactLine.Contains(
+                    CompactText(term),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                matchedTerms++;
+
+                score +=
+                    24;
+            }
+        }
+
+        if (terms.Count > 1
+            && matchedTerms >= 2)
+        {
+            score +=
+                35;
+        }
+
+        if (versionIntent
+            && VersionRegex.IsMatch(
+                line))
+        {
+            score +=
+                90;
+
+            if (DisplayVersionRegex.IsMatch(
+                    line))
+            {
+                score +=
+                    120;
+            }
+
+            if (line.Contains(
+                    "Version",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                score +=
+                    30;
+            }
+        }
+
+        return score;
+    }
+
+    private static List<string> ExtractSearchTerms(
+        string query)
+    {
+        return
+            SearchTokenRegex
+                .Matches(
+                    query)
+                .Cast<Match>()
+                .Select(
+                    match =>
+                        match.Value.Trim())
+                .Where(
+                    value =>
+                        value.Length >= 2)
+                .Where(
+                    value =>
+                        !SearchStopWords.Contains(
+                            value))
+                .Distinct(
+                    StringComparer.OrdinalIgnoreCase)
+                .Take(12)
+                .ToList();
+    }
+
+    private static string NormalizeSearchText(
+        string value)
+    {
+        if (string.IsNullOrWhiteSpace(
+                value))
+        {
+            return string.Empty;
+        }
+
+        var builder =
+            new StringBuilder(
+                value.Length);
+
+        var previousWasSpace =
+            false;
+
+        foreach (var character
+                 in value)
+        {
+            if (char.IsWhiteSpace(
+                    character))
+            {
+                if (!previousWasSpace)
+                {
+                    builder.Append(
+                        ' ');
+
+                    previousWasSpace =
+                        true;
+                }
+
+                continue;
+            }
+
+            builder.Append(
+                char.ToLowerInvariant(
+                    character));
+
+            previousWasSpace =
+                false;
+        }
+
+        return
+            builder
+                .ToString()
+                .Trim();
+    }
+
+    private static string CompactText(
+        string value)
+    {
+        if (string.IsNullOrWhiteSpace(
+                value))
+        {
+            return string.Empty;
+        }
+
+        var builder =
+            new StringBuilder(
+                value.Length);
+
+        foreach (var character
+                 in value)
+        {
+            if (!char.IsLetterOrDigit(
+                    character))
+            {
+                continue;
+            }
+
+            builder.Append(
+                char.ToLowerInvariant(
+                    character));
+        }
+
+        return
+            builder.ToString();
+    }
+
+    private static string TruncateLine(
+        string line,
+        int maximumLength)
+    {
+        if (line.Length
+            <= maximumLength)
+        {
+            return line;
+        }
+
+        return
+            line[..maximumLength]
+            + "...";
     }
 
     private string ToRelativePath(
@@ -1427,7 +2279,8 @@ public sealed class SekoToolHost
         if (!arguments.TryGetProperty(
                 propertyName,
                 out var element)
-            || element.ValueKind != JsonValueKind.String)
+            || element.ValueKind
+                != JsonValueKind.String)
         {
             throw new ArgumentException(
                 $"Missing string argument '{propertyName}'.");
@@ -1450,12 +2303,14 @@ public sealed class SekoToolHost
                 $"Missing boolean argument '{propertyName}'.");
         }
 
-        if (element.ValueKind == JsonValueKind.True)
+        if (element.ValueKind
+            == JsonValueKind.True)
         {
             return true;
         }
 
-        if (element.ValueKind == JsonValueKind.False)
+        if (element.ValueKind
+            == JsonValueKind.False)
         {
             return false;
         }
@@ -1476,7 +2331,8 @@ public sealed class SekoToolHost
             return defaultValue;
         }
 
-        if (element.ValueKind == JsonValueKind.Number
+        if (element.ValueKind
+            == JsonValueKind.Number
             && element.TryGetInt32(
                 out var value))
         {
@@ -1573,7 +2429,8 @@ public sealed class SekoToolHost
         if (firstLine.Length > 60)
         {
             firstLine =
-                firstLine[..60].TrimEnd()
+                firstLine[..60]
+                    .TrimEnd()
                 + "...";
         }
 
@@ -1611,6 +2468,59 @@ public sealed class SekoToolHost
             return
                 Array.Empty<string>();
         }
+    }
+
+    private static async Task WritePreservingUtf8BomAsync(
+        string fullPath,
+        string content,
+        CancellationToken cancellationToken)
+    {
+        var useBom =
+            false;
+
+        if (File.Exists(
+                fullPath))
+        {
+            try
+            {
+                await using var stream =
+                    new FileStream(
+                        fullPath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite,
+                        3,
+                        FileOptions.Asynchronous);
+
+                var prefix =
+                    new byte[3];
+
+                var read =
+                    await stream.ReadAsync(
+                        prefix.AsMemory(
+                            0,
+                            prefix.Length),
+                        cancellationToken);
+
+                useBom =
+                    read >= 3
+                    && prefix[0] == 0xEF
+                    && prefix[1] == 0xBB
+                    && prefix[2] == 0xBF;
+            }
+            catch
+            {
+                useBom =
+                    false;
+            }
+        }
+
+        await File.WriteAllTextAsync(
+            fullPath,
+            content,
+            new UTF8Encoding(
+                useBom),
+            cancellationToken);
     }
 
     private static JsonObject StringProperty(
@@ -1698,7 +2608,8 @@ public sealed class SekoToolHost
                     true
             };
 
-        foreach (var argument in arguments)
+        foreach (var argument
+                 in arguments)
         {
             startInfo.ArgumentList.Add(
                 argument);
@@ -1716,12 +2627,10 @@ public sealed class SekoToolHost
             process.Start();
 
             var outputTask =
-                process.StandardOutput.ReadToEndAsync(
-                    cancellationToken);
+                process.StandardOutput.ReadToEndAsync();
 
             var errorTask =
-                process.StandardError.ReadToEndAsync(
-                    cancellationToken);
+                process.StandardError.ReadToEndAsync();
 
             using var timeoutSource =
                 CancellationTokenSource.CreateLinkedTokenSource(
@@ -1737,16 +2646,17 @@ public sealed class SekoToolHost
                     timeoutSource.Token);
             }
             catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
             {
-                try
-                {
-                    process.Kill(
-                        true);
-                }
-                catch
-                {
-                    // Best effort.
-                }
+                TryKillProcess(
+                    process);
+
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                TryKillProcess(
+                    process);
 
                 return
                     new ProcessResult(
@@ -1766,8 +2676,14 @@ public sealed class SekoToolHost
             if (!string.IsNullOrWhiteSpace(
                     error))
             {
+                if (!string.IsNullOrWhiteSpace(
+                        combined))
+                {
+                    combined +=
+                        Environment.NewLine;
+                }
+
                 combined +=
-                    Environment.NewLine +
                     error;
             }
 
@@ -1775,6 +2691,10 @@ public sealed class SekoToolHost
                 new ProcessResult(
                     process.ExitCode,
                     combined.Trim());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (Exception exception)
         {
@@ -1785,11 +2705,29 @@ public sealed class SekoToolHost
         }
     }
 
+    private static void TryKillProcess(
+        Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(
+                    true);
+            }
+        }
+        catch
+        {
+            // Best effort.
+        }
+    }
+
     private static string TrimOutput(
         string output,
         int maximumLength)
     {
-        if (output.Length <= maximumLength)
+        if (output.Length
+            <= maximumLength)
         {
             return output;
         }
@@ -1800,6 +2738,17 @@ public sealed class SekoToolHost
             + Environment.NewLine
             + "[Output truncated]";
     }
+
+    private sealed record WorkspaceLineMatch(
+        int LineIndex,
+        int Score);
+
+    private sealed record WorkspaceSearchResult(
+        string RelativePath,
+        int Score,
+        int FileScore,
+        string[] Lines,
+        IReadOnlyList<WorkspaceLineMatch> LineMatches);
 
     private sealed record ProcessResult(
         int ExitCode,
