@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Seko.Core.Workspaces;
+using Seko.Infrastructure.Agent.Build;
 using Seko.Infrastructure.Agent.Safety;
 
 namespace Seko.Infrastructure.Agent;
@@ -71,7 +72,7 @@ public sealed class SekoToolHost
             RegexOptions.Compiled
             | RegexOptions.IgnoreCase);
 
-    private readonly Workspace _workspace;
+    private readonly BuildService _buildService;
     private readonly WorkspacePathGuard _pathGuard;
     private readonly string _workspaceRoot;
 
@@ -94,12 +95,14 @@ public sealed class SekoToolHost
     public SekoToolHost(
         Workspace workspace)
     {
-        _workspace =
-            workspace;
-
         _pathGuard =
             new WorkspacePathGuard(
                 workspace.RootPath);
+
+        _buildService =
+            new BuildService(
+                workspace,
+                _pathGuard);
 
         _workspaceRoot =
             _pathGuard.WorkspaceRoot;
@@ -1857,46 +1860,18 @@ public sealed class SekoToolHost
         _lastBuildSucceeded =
             false;
 
-        var target =
-            FindBuildTarget();
+        var result =
+            await _buildService.BuildAsync(
+                cancellationToken);
 
-        if (target is null)
+        if (!result.HasTarget)
         {
             return
                 "ERROR: No .sln or .csproj file was found in this workspace.";
         }
 
-        var localAppData =
-            Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData);
-
-        var buildOutput =
-            Path.Combine(
-                localAppData,
-                "Seko",
-                "BuildCheck",
-                _workspace.Id.ToString("N"),
-                DateTime.Now.ToString(
-                    "yyyyMMdd-HHmmssfff"));
-
-        Directory.CreateDirectory(
-            buildOutput);
-
-        var result =
-            await RunProcessAsync(
-                "dotnet",
-                new[]
-                {
-                    "build",
-                    target,
-                    $"-p:BaseOutputPath={buildOutput}{Path.DirectorySeparatorChar}"
-                },
-                _workspaceRoot,
-                cancellationToken,
-                TimeSpan.FromMinutes(3));
-
         _lastBuildSucceeded =
-            result.ExitCode == 0;
+            result.Succeeded;
 
         if (_lastBuildSucceeded)
         {
@@ -1905,9 +1880,9 @@ public sealed class SekoToolHost
         }
 
         return
-            $"BUILD TARGET: {ToRelativePath(target)}\n" +
-            $"BUILD EXIT CODE: {result.ExitCode}\n\n" +
-            TrimOutputBalanced(
+            $"BUILD TARGET: {ToRelativePath(result.TargetPath!)}\n"
+            + $"BUILD EXIT CODE: {result.ExitCode}\n\n"
+            + TrimOutputBalanced(
                 result.Output,
                 10_000);
     }
@@ -1997,42 +1972,6 @@ public sealed class SekoToolHost
                 "The Git repository already contained uncommitted changes before this task began. " +
                 "Seko will not modify files until those changes are committed or reverted.");
         }
-    }
-
-    private string? FindBuildTarget()
-    {
-        var solution =
-            Directory
-                .EnumerateFiles(
-                    _workspaceRoot,
-                    "*.sln",
-                    SearchOption.TopDirectoryOnly)
-                .Where(
-                    path =>
-                        !_pathGuard.IsReparsePoint(
-                            path))
-                .OrderBy(
-                    path => path,
-                    StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
-
-        if (solution is not null)
-        {
-            return solution;
-        }
-
-        return _pathGuard.EnumerateWorkspaceFiles(
-                10_000)
-            .Where(
-                path =>
-                    Path.GetExtension(path)
-                        .Equals(
-                            ".csproj",
-                            StringComparison.OrdinalIgnoreCase))
-            .OrderBy(
-                path => path,
-                StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
     }
 
     private static int ScoreFileName(
