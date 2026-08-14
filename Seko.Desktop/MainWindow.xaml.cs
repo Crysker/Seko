@@ -45,7 +45,8 @@ public partial class MainWindow : Window
         _activeWorkspace =
             _workspaces.FirstOrDefault(
                 workspace =>
-                    workspace.Id == state.ActiveWorkspaceId)
+                    workspace.Id
+                    == state.ActiveWorkspaceId)
             ?? _workspaces.First();
 
         WorkspaceList.ItemsSource =
@@ -58,20 +59,16 @@ public partial class MainWindow : Window
         ConversationList.ItemsSource =
             _conversation;
 
-        var apiKeyConfigured =
-            !string.IsNullOrWhiteSpace(
-                Environment.GetEnvironmentVariable(
-                    "OPENAI_API_KEY"));
-
         _conversation.Add(
             new ChatMessage
             {
-                Role = MessageRole.Assistant,
+                Role =
+                    MessageRole.Assistant,
 
                 Content =
-                    apiKeyConfigured
-                        ? $"I'm online.\n\nActive workspace: {_activeWorkspace.Name}"
-                        : "I'm running, but OPENAI_API_KEY isn't configured."
+                    $"I'm online locally.\n\n" +
+                    $"Active workspace: {_activeWorkspace.Name}\n\n" +
+                    "No paid AI API is being used."
             });
 
         UpdateWorkspaceUi();
@@ -124,7 +121,8 @@ public partial class MainWindow : Window
                 Title =
                     "Choose a folder for the new Seko workspace",
 
-                Multiselect = false
+                Multiselect =
+                    false
             };
 
         var result =
@@ -146,7 +144,9 @@ public partial class MainWindow : Window
                     string.Equals(
                         Path.GetFullPath(
                             workspace.RootPath),
+
                         selectedPath,
+
                         StringComparison.OrdinalIgnoreCase));
 
         if (existingWorkspace is not null)
@@ -257,7 +257,7 @@ public partial class MainWindow : Window
     private IAgent CreateAgentForWorkspace(
         Workspace workspace)
     {
-        return new OpenAiAgent(
+        return new OllamaAgent(
             workspace);
     }
 
@@ -335,7 +335,8 @@ public partial class MainWindow : Window
         var text =
             MessageInput.Text.Trim();
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(
+                text))
         {
             return;
         }
