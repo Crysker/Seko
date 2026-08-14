@@ -326,7 +326,7 @@
                                        Foreground="{StaticResource TextMutedBrush}"
                                        Margin="0,2,0,0"/>
 
-                            <TextBlock Text="v0.1.1"
+                            <TextBlock Text="v1.1.2"
                                        FontSize="9"
                                        Foreground="#4F5D59"
                                        Margin="0,2,0,0"/>
