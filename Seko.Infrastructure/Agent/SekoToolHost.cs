@@ -1,10 +1,10 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Seko.Core.Workspaces;
 using Seko.Infrastructure.Agent.Build;
+using Seko.Infrastructure.Agent.Git;
 using Seko.Infrastructure.Agent.Safety;
 
 namespace Seko.Infrastructure.Agent;
@@ -73,6 +73,7 @@ public sealed class SekoToolHost
             | RegexOptions.IgnoreCase);
 
     private readonly BuildService _buildService;
+    private readonly GitService _gitService;
     private readonly WorkspacePathGuard _pathGuard;
     private readonly string _workspaceRoot;
 
@@ -106,6 +107,10 @@ public sealed class SekoToolHost
 
         _workspaceRoot =
             _pathGuard.WorkspaceRoot;
+
+        _gitService =
+            new GitService(
+                _workspaceRoot);
     }
 
     public async Task BeginTaskAsync(
@@ -125,46 +130,15 @@ public sealed class SekoToolHost
         _lastSuccessfulBuildGeneration =
             -1;
 
-        var gitCheck =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "rev-parse",
-                    "--is-inside-work-tree"
-                },
-                _workspaceRoot,
+        var repositoryState =
+            await _gitService.GetRepositoryStateAsync(
                 cancellationToken);
 
         _isGitRepository =
-            gitCheck.ExitCode == 0
-            && gitCheck.Output.Trim().Equals(
-                "true",
-                StringComparison.OrdinalIgnoreCase);
-
-        if (!_isGitRepository)
-        {
-            _baselineClean =
-                true;
-
-            return;
-        }
-
-        var status =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "status",
-                    "--porcelain"
-                },
-                _workspaceRoot,
-                cancellationToken);
+            repositoryState.IsRepository;
 
         _baselineClean =
-            status.ExitCode == 0
-            && string.IsNullOrWhiteSpace(
-                status.Output);
+            repositoryState.IsClean;
     }
 
     public JsonArray CreateToolDefinitions()
@@ -644,88 +618,36 @@ public sealed class SekoToolHost
             return null;
         }
 
-        var addArguments =
-            new List<string>
-            {
-                "add",
-                "--"
-            };
-
-        addArguments.AddRange(
-            filesToStage);
-
-        var addResult =
-            await RunProcessAsync(
-                "git",
-                addArguments,
-                _workspaceRoot,
+        var commitResult =
+            await _gitService.CommitAsync(
+                filesToStage,
+                userRequest,
                 cancellationToken);
 
-        if (addResult.ExitCode != 0)
+        if (!commitResult.StagingSucceeded)
         {
             return
                 "Git: staging failed.\n\n" +
-                addResult.Output;
+                commitResult.Output;
         }
 
-        var stagedDiff =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "diff",
-                    "--cached",
-                    "--name-only"
-                },
-                _workspaceRoot,
-                cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(
-                stagedDiff.Output))
+        if (!commitResult.HasChanges)
         {
             return
                 "Git: there were no effective changes to commit.";
         }
 
-        var commitMessage =
-            CreateCommitMessage(
-                userRequest);
-
-        var commitResult =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "commit",
-                    "-m",
-                    commitMessage
-                },
-                _workspaceRoot,
-                cancellationToken);
-
-        if (commitResult.ExitCode != 0)
+        if (!commitResult.CommitSucceeded)
         {
             return
                 "Git: changes were staged, but the commit failed.\n\n" +
                 commitResult.Output;
         }
 
-        var hashResult =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "rev-parse",
-                    "--short",
-                    "HEAD"
-                },
-                _workspaceRoot,
-                cancellationToken);
-
         return
             $"Git: committed locally as " +
-            $"{hashResult.Output.Trim()} - " +
-            commitMessage;
+            $"{commitResult.ShortHash} - " +
+            commitResult.CommitMessage;
     }
 
     private async Task<string> SearchWorkspaceAsync(
@@ -1897,14 +1819,7 @@ public sealed class SekoToolHost
         }
 
         var result =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "status",
-                    "--short"
-                },
-                _workspaceRoot,
+            await _gitService.GetStatusAsync(
                 cancellationToken);
 
         var currentStatus =
@@ -1928,13 +1843,7 @@ public sealed class SekoToolHost
         }
 
         var result =
-            await RunProcessAsync(
-                "git",
-                new[]
-                {
-                    "diff"
-                },
-                _workspaceRoot,
+            await _gitService.GetDiffAsync(
                 cancellationToken);
 
         if (string.IsNullOrWhiteSpace(
@@ -2401,39 +2310,6 @@ public sealed class SekoToolHost
                 StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string CreateCommitMessage(
-        string userRequest)
-    {
-        var firstLine =
-            userRequest
-                .Split(
-                    new[]
-                    {
-                        '\r',
-                        '\n'
-                    },
-                    StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault()
-                ?.Trim()
-            ?? "self improvement";
-
-        firstLine =
-            firstLine.Replace(
-                "\"",
-                string.Empty);
-
-        if (firstLine.Length > 60)
-        {
-            firstLine =
-                firstLine[..60]
-                    .TrimEnd()
-                + "...";
-        }
-
-        return
-            $"Seko: {firstLine}";
-    }
-
     private static async Task WritePreservingUtf8BomAsync(
         string fullPath,
         string content,
@@ -2543,149 +2419,6 @@ public sealed class SekoToolHost
             };
     }
 
-    private static async Task<ProcessResult> RunProcessAsync(
-        string executable,
-        IEnumerable<string> arguments,
-        string workingDirectory,
-        CancellationToken cancellationToken,
-        TimeSpan? timeout = null)
-    {
-        var startInfo =
-            new ProcessStartInfo
-            {
-                FileName =
-                    executable,
-
-                WorkingDirectory =
-                    workingDirectory,
-
-                RedirectStandardOutput =
-                    true,
-
-                RedirectStandardError =
-                    true,
-
-                UseShellExecute =
-                    false,
-
-                CreateNoWindow =
-                    true
-            };
-
-        foreach (var argument
-                 in arguments)
-        {
-            startInfo.ArgumentList.Add(
-                argument);
-        }
-
-        try
-        {
-            using var process =
-                new Process
-                {
-                    StartInfo =
-                        startInfo
-                };
-
-            process.Start();
-
-            var outputTask =
-                process.StandardOutput.ReadToEndAsync();
-
-            var errorTask =
-                process.StandardError.ReadToEndAsync();
-
-            using var timeoutSource =
-                CancellationTokenSource.CreateLinkedTokenSource(
-                    cancellationToken);
-
-            timeoutSource.CancelAfter(
-                timeout
-                ?? TimeSpan.FromSeconds(45));
-
-            try
-            {
-                await process.WaitForExitAsync(
-                    timeoutSource.Token);
-            }
-            catch (OperationCanceledException)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                TryKillProcess(
-                    process);
-
-                throw;
-            }
-            catch (OperationCanceledException)
-            {
-                TryKillProcess(
-                    process);
-
-                return
-                    new ProcessResult(
-                        -1,
-                        "Process timed out.");
-            }
-
-            var output =
-                await outputTask;
-
-            var error =
-                await errorTask;
-
-            var combined =
-                output;
-
-            if (!string.IsNullOrWhiteSpace(
-                    error))
-            {
-                if (!string.IsNullOrWhiteSpace(
-                        combined))
-                {
-                    combined +=
-                        Environment.NewLine;
-                }
-
-                combined +=
-                    error;
-            }
-
-            return
-                new ProcessResult(
-                    process.ExitCode,
-                    combined.Trim());
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            return
-                new ProcessResult(
-                    -1,
-                    exception.Message);
-        }
-    }
-
-    private static void TryKillProcess(
-        Process process)
-    {
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(
-                    true);
-            }
-        }
-        catch
-        {
-            // Best effort.
-        }
-    }
-
     private static string TrimOutputBalanced(
         string output,
         int maximumLength)
@@ -2748,7 +2481,5 @@ public sealed class SekoToolHost
         string[] Lines,
         IReadOnlyList<WorkspaceLineMatch> LineMatches);
 
-    private sealed record ProcessResult(
-        int ExitCode,
-        string Output);
+
 }
