@@ -375,50 +375,8 @@ public sealed class SekoToolHost
                 }),
 
             CreateFunctionTool(
-                "read_task_log",
-                """
-                Read one of Seko's own finished diagnostic task logs from the real
-                Windows LocalApplicationData\Seko\Logs\Tasks directory.
-
-                Use selection 'latest' for the newest finished task.
-                Use selection 'latest_unsuccessful' for the newest failed,
-                incomplete or stopped task.
-
-                This tool is read-only and cannot access arbitrary paths.
-                """,
-                new JsonObject
-                {
-                    ["type"] =
-                        "object",
-
-                    ["properties"] =
-                        new JsonObject
-                        {
-                            ["selection"] =
-                                new JsonObject
-                                {
-                                    ["type"] =
-                                        "string",
-
-                                    ["description"] =
-                                        "Which finished task log to read.",
-
-                                    ["enum"] =
-                                        new JsonArray
-                                        {
-                                            "latest",
-                                            "latest_unsuccessful"
-                                        }
-                                }
-                        },
-
-                    ["required"] =
-                        new JsonArray()
-                }),
-
-            CreateFunctionTool(
                 "write_file",
-                "Create a new source/text file or deliberately replace an entire existing file.",
+                "Create a new source/text file or deliberately replace an entire existing file. New .cs and .xaml files must be created inside a real .NET project root discovered from the active solution/project structure.",
                 new JsonObject
                 {
                     ["type"] =
@@ -545,11 +503,6 @@ public sealed class SekoToolHost
 
                 "read_file" =>
                     await ReadFileAsync(
-                        arguments,
-                        cancellationToken),
-
-                "read_task_log" =>
-                    await ReadTaskLogAsync(
                         arguments,
                         cancellationToken),
 
@@ -1422,160 +1375,6 @@ public sealed class SekoToolHost
             content;
     }
 
-    private static async Task<string> ReadTaskLogAsync(
-        JsonElement arguments,
-        CancellationToken cancellationToken)
-    {
-        var selection =
-            "latest";
-
-        if (arguments.TryGetProperty(
-                "selection",
-                out var selectionElement)
-            && selectionElement.ValueKind
-                == JsonValueKind.String)
-        {
-            selection =
-                selectionElement.GetString()
-                    ?.Trim()
-                    .ToLowerInvariant()
-                ?? "latest";
-        }
-
-        if (!string.Equals(
-                selection,
-                "latest",
-                StringComparison.Ordinal)
-            && !string.Equals(
-                selection,
-                "latest_unsuccessful",
-                StringComparison.Ordinal))
-        {
-            return
-                "ERROR: selection must be 'latest' or 'latest_unsuccessful'.";
-        }
-
-        var localAppData =
-            Environment.GetFolderPath(
-                Environment.SpecialFolder.LocalApplicationData);
-
-        var logDirectory =
-            Path.Combine(
-                localAppData,
-                "Seko",
-                "Logs",
-                "Tasks");
-
-        if (!Directory.Exists(
-                logDirectory))
-        {
-            return
-                "No Seko task log directory exists yet.";
-        }
-
-        List<FileInfo> logFiles;
-
-        try
-        {
-            logFiles =
-                new DirectoryInfo(
-                    logDirectory)
-                    .EnumerateFiles(
-                        "*.md",
-                        SearchOption.TopDirectoryOnly)
-                    .OrderByDescending(
-                        file => file.LastWriteTimeUtc)
-                    .ToList();
-        }
-        catch (Exception exception)
-        {
-            return
-                "ERROR: Could not enumerate Seko task logs: " +
-                exception.Message;
-        }
-
-        if (logFiles.Count == 0)
-        {
-            return
-                "No Seko task logs were found.";
-        }
-
-        foreach (var logFile
-                 in logFiles)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (logFile.Length
-                > 500_000)
-            {
-                continue;
-            }
-
-            string content;
-
-            try
-            {
-                content =
-                    await File.ReadAllTextAsync(
-                        logFile.FullName,
-                        cancellationToken);
-            }
-            catch
-            {
-                continue;
-            }
-
-            /*
-                Starting a new Seko request creates its own Running log before
-                tools execute. Skip that current log so "latest" means the
-                newest task that actually finished before this request.
-            */
-            if (content.Contains(
-                    "Status: **Running**",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (selection
-                    == "latest_unsuccessful"
-                && !IsUnsuccessfulTaskLog(
-                    content))
-            {
-                continue;
-            }
-
-            return
-                $"TASK LOG FILE: {logFile.Name}\n" +
-                $"SELECTION: {selection}\n\n" +
-                TrimOutput(
-                    content,
-                    80_000);
-        }
-
-        return selection
-            == "latest_unsuccessful"
-                ? "No finished failed, incomplete or stopped Seko task log was found."
-                : "No finished Seko task log was found.";
-    }
-
-    private static bool IsUnsuccessfulTaskLog(
-        string content)
-    {
-        return
-            content.Contains(
-                "Status: **Failed**",
-                StringComparison.OrdinalIgnoreCase)
-
-            || content.Contains(
-                "Status: **Incomplete**",
-                StringComparison.OrdinalIgnoreCase)
-
-            || content.Contains(
-                "Status: **Stopped**",
-                StringComparison.OrdinalIgnoreCase);
-    }
-
     private async Task<string> WriteFileAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -1603,6 +1402,9 @@ public sealed class SekoToolHost
                 relativePath);
 
         EnsureAllowedFile(
+            fullPath);
+
+        EnsureNewSourcePathBelongsToProject(
             fullPath);
 
         var directory =
@@ -1997,6 +1799,223 @@ public sealed class SekoToolHost
             throw new InvalidOperationException(
                 $"File type '{extension}' is not enabled for Seko yet.");
         }
+    }
+
+    private void EnsureNewSourcePathBelongsToProject(
+        string fullPath)
+    {
+        if (File.Exists(
+                fullPath))
+        {
+            return;
+        }
+
+        var extension =
+            Path.GetExtension(
+                fullPath);
+
+        if (!extension.Equals(
+                ".cs",
+                StringComparison.OrdinalIgnoreCase)
+            && !extension.Equals(
+                ".xaml",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        var projectRoots =
+            GetKnownProjectRoots();
+
+        if (projectRoots.Any(
+                projectRoot =>
+                    IsPathInsideDirectory(
+                        fullPath,
+                        projectRoot)))
+        {
+            return;
+        }
+
+        var relativePath =
+            NormalizeRelativePath(
+                Path.GetRelativePath(
+                    _workspaceRoot,
+                    fullPath));
+
+        var knownRoots =
+            projectRoots.Count == 0
+                ? "- No .NET project roots could be discovered."
+                : string.Join(
+                    Environment.NewLine,
+                    projectRoots.Select(
+                        projectRoot =>
+                            "- " +
+                            NormalizeRelativePath(
+                                Path.GetRelativePath(
+                                    _workspaceRoot,
+                                    projectRoot))));
+
+        throw new InvalidOperationException(
+            "SOURCE_PATH_NOT_IN_PROJECT.\n\n" +
+            $"Refusing to create new source file '{relativePath}' because it is not inside a real .NET project.\n\n" +
+            "Known project roots:\n" +
+            knownRoots +
+            "\n\nInspect the solution/project structure and create the source file inside the appropriate project instead of inventing a workspace folder from the workspace name.");
+    }
+
+    private IReadOnlyList<string> GetKnownProjectRoots()
+    {
+        var roots =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+        var solutionFiles =
+            Directory
+                .EnumerateFiles(
+                    _workspaceRoot,
+                    "*.sln",
+                    SearchOption.TopDirectoryOnly)
+                .OrderBy(
+                    path => path,
+                    StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        foreach (var solutionFile
+                 in solutionFiles)
+        {
+            try
+            {
+                foreach (var line
+                         in File.ReadLines(
+                             solutionFile))
+                {
+                    foreach (Match match
+                             in Regex.Matches(
+                                 line,
+                                 @"[""']([^""']+\.csproj)[""']",
+                                 RegexOptions.IgnoreCase))
+                    {
+                        var projectRelativePath =
+                            match.Groups[1]
+                                .Value
+                                .Replace(
+                                    '\\',
+                                    Path.DirectorySeparatorChar)
+                                .Replace(
+                                    '/',
+                                    Path.DirectorySeparatorChar);
+
+                        var projectPath =
+                            Path.GetFullPath(
+                                Path.Combine(
+                                    _workspaceRoot,
+                                    projectRelativePath));
+
+                        if (!IsPathInsideDirectory(
+                                projectPath,
+                                _workspaceRoot)
+                            || !File.Exists(
+                                projectPath))
+                        {
+                            continue;
+                        }
+
+                        var projectRoot =
+                            Path.GetDirectoryName(
+                                projectPath);
+
+                        if (!string.IsNullOrWhiteSpace(
+                                projectRoot))
+                        {
+                            roots.Add(
+                                projectRoot);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall back to project-file discovery below.
+            }
+        }
+
+        if (roots.Count == 0)
+        {
+            try
+            {
+                foreach (var projectPath
+                         in Directory.EnumerateFiles(
+                             _workspaceRoot,
+                             "*.csproj",
+                             SearchOption.AllDirectories))
+                {
+                    var relativeProjectPath =
+                        Path.GetRelativePath(
+                            _workspaceRoot,
+                            projectPath);
+
+                    if (PathContainsIgnoredDirectory(
+                            relativeProjectPath))
+                    {
+                        continue;
+                    }
+
+                    var projectRoot =
+                        Path.GetDirectoryName(
+                            projectPath);
+
+                    if (!string.IsNullOrWhiteSpace(
+                            projectRoot))
+                    {
+                        roots.Add(
+                            Path.GetFullPath(
+                                projectRoot));
+                    }
+                }
+            }
+            catch
+            {
+                // The caller will report that no project roots were discovered.
+            }
+        }
+
+        return roots
+            .OrderBy(
+                path => path,
+                StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool IsPathInsideDirectory(
+        string fullPath,
+        string directory)
+    {
+        var normalizedPath =
+            Path.GetFullPath(
+                fullPath);
+
+        var normalizedDirectory =
+            Path.GetFullPath(
+                directory)
+            .TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+
+        if (string.Equals(
+                normalizedPath,
+                normalizedDirectory,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var directoryPrefix =
+            normalizedDirectory +
+            Path.DirectorySeparatorChar;
+
+        return normalizedPath.StartsWith(
+            directoryPrefix,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsSensitiveFile(
