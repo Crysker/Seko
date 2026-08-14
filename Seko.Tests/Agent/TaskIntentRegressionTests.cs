@@ -1,4 +1,3 @@
-using System.Reflection;
 using Seko.Infrastructure.Agent;
 
 namespace Seko.Tests.Agent;
@@ -48,7 +47,7 @@ public sealed class TaskIntentRegressionTests
         bool expectedExplicitBuild)
     {
         var intent =
-            AnalyzeTaskIntent(
+            TaskIntentAnalyzer.Analyze(
                 request);
 
         Assert.Equal(
@@ -74,7 +73,7 @@ public sealed class TaskIntentRegressionTests
         string request)
     {
         var intent =
-            AnalyzeTaskIntent(
+            TaskIntentAnalyzer.Analyze(
                 request);
 
         Assert.True(
@@ -83,77 +82,4 @@ public sealed class TaskIntentRegressionTests
         Assert.False(
             intent.RequiresModification);
     }
-
-    private static TaskIntentSnapshot AnalyzeTaskIntent(
-        string request)
-    {
-        var method =
-            typeof(OllamaAgent).GetMethod(
-                "AnalyzeTaskIntent",
-                BindingFlags.NonPublic
-                | BindingFlags.Static);
-
-        Assert.NotNull(
-            method);
-
-        var result =
-            method!.Invoke(
-                null,
-                new object[]
-                {
-                    request
-                });
-
-        Assert.NotNull(
-            result);
-
-        var resultType =
-            result!.GetType();
-
-        return
-            new TaskIntentSnapshot(
-                ReadBooleanProperty(
-                    result,
-                    resultType,
-                    "RequiresWorkspaceTools"),
-                ReadBooleanProperty(
-                    result,
-                    resultType,
-                    "RequiresModification"),
-                ReadBooleanProperty(
-                    result,
-                    resultType,
-                    "ExplicitBuildRequested"));
-    }
-
-    private static bool ReadBooleanProperty(
-        object instance,
-        Type instanceType,
-        string propertyName)
-    {
-        var property =
-            instanceType.GetProperty(
-                propertyName,
-                BindingFlags.Instance
-                | BindingFlags.Public
-                | BindingFlags.NonPublic);
-
-        Assert.NotNull(
-            property);
-
-        var value =
-            property!.GetValue(
-                instance);
-
-        Assert.IsType<bool>(
-            value);
-
-        return
-            (bool)value!;
-    }
-
-    private sealed record TaskIntentSnapshot(
-        bool RequiresWorkspaceTools,
-        bool RequiresModification,
-        bool ExplicitBuildRequested);
 }
