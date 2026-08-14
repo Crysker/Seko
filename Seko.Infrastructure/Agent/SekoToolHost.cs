@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Seko.Core.Workspaces;
 using Seko.Infrastructure.Agent.Build;
+using Seko.Infrastructure.Agent.Adaptive;
 using Seko.Infrastructure.Agent.Capabilities;
 using Seko.Infrastructure.Agent.Capabilities.BuiltIn;
 using Seko.Infrastructure.Agent.Git;
@@ -81,7 +82,9 @@ public sealed class SekoToolHost
     private readonly WorkspacePathGuard _pathGuard;
     private readonly SekoToolRegistry _toolRegistry;
     private readonly SekoCapabilityRegistry _capabilityRegistry;
-    private readonly SekoPermissionPolicy _permissionPolicy;
+    private readonly SekoPermissionManager _permissionManager;
+    private readonly SekoCapabilityPermissionService _capabilityPermissionService;
+    private readonly SekoAdaptivePlatform _adaptivePlatform;
     private readonly string _workspaceRoot;
 
     private readonly HashSet<string> _changedFiles =
@@ -122,13 +125,25 @@ public sealed class SekoToolHost
         _toolRegistry =
             new SekoToolRegistry();
 
-        _permissionPolicy =
-            SekoPermissionPolicy.CreateDefault();
+        _permissionManager =
+            SekoPermissionManager.CreateDefault();
 
         _capabilityRegistry =
             CreateCapabilityRegistry(
                 _toolRegistry,
-                _permissionPolicy);
+                _permissionManager.Policy);
+
+        _capabilityPermissionService =
+            new SekoCapabilityPermissionService(
+                _permissionManager,
+                _capabilityRegistry,
+                _toolRegistry);
+
+        _adaptivePlatform =
+            new SekoAdaptivePlatform(
+                workspace,
+                _capabilityRegistry,
+                _permissionManager);
     }
 
     public async Task BeginTaskAsync(
@@ -565,6 +580,53 @@ public sealed class SekoToolHost
             toolRegistry);
 
         return registry;
+    }
+    public string BuildAdaptiveContext(
+        string currentTask)
+    {
+        return
+            _adaptivePlatform.BuildContext(
+                currentTask);
+    }
+
+    public Task SetPermissionDecisionAsync(
+        string principalId,
+        CapabilitySource source,
+        string permission,
+        PermissionDecision decision,
+        CancellationToken cancellationToken = default)
+    {
+        return
+            _permissionManager.SetDecisionAsync(
+                principalId,
+                source,
+                permission,
+                decision,
+                cancellationToken);
+    }
+
+    public Task<CapabilityActivationState> SetCapabilityPermissionAsync(
+        string capabilityId,
+        string permission,
+        PermissionDecision decision,
+        CancellationToken cancellationToken = default)
+    {
+        return
+            _capabilityPermissionService.SetDecisionAsync(
+                capabilityId,
+                permission,
+                decision,
+                cancellationToken);
+    }
+
+    public Task<CapabilityActivationState> ClearCapabilityPermissionsAsync(
+        string capabilityId,
+        CancellationToken cancellationToken = default)
+    {
+        return
+            _capabilityPermissionService.ClearDecisionsAsync(
+                capabilityId,
+                cancellationToken);
     }
     public async Task<string?> TryAutoCommitAsync(
         string userRequest,

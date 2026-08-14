@@ -1099,6 +1099,9 @@ public sealed class OllamaAgent :
             CURRENT TASK
             {{currentTask}}
 
+            ADAPTIVE CONTEXT
+            {{_toolHost.BuildAdaptiveContext(currentTask)}}
+
             TASK BOUNDARY
             The CURRENT TASK above is the only executable user task for this
             tool run.

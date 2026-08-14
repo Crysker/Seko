@@ -2,6 +2,11 @@ namespace Seko.Infrastructure.Agent.Permissions;
 
 public sealed class PermissionRule
 {
+    public string? CapabilityId
+    {
+        get;
+    }
+
     public CapabilitySource? Source
     {
         get;
@@ -31,6 +36,19 @@ public sealed class PermissionRule
         CapabilitySource? source,
         string pattern,
         PermissionDecision decision)
+        : this(
+            null,
+            source,
+            pattern,
+            decision)
+    {
+    }
+
+    public PermissionRule(
+        string? capabilityId,
+        CapabilitySource? source,
+        string pattern,
+        PermissionDecision decision)
     {
         if (string.IsNullOrWhiteSpace(
                 pattern))
@@ -38,6 +56,23 @@ public sealed class PermissionRule
             throw new ArgumentException(
                 "Permission pattern cannot be empty.",
                 nameof(pattern));
+        }
+
+        if (!Enum.IsDefined(
+                typeof(PermissionDecision),
+                decision))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(decision));
+        }
+
+        if (source.HasValue
+            && !Enum.IsDefined(
+                typeof(CapabilitySource),
+                source.Value))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(source));
         }
 
         var normalized =
@@ -58,6 +93,12 @@ public sealed class PermissionRule
                 nameof(pattern));
         }
 
+        CapabilityId =
+            string.IsNullOrWhiteSpace(
+                capabilityId)
+                ? null
+                : capabilityId.Trim();
+
         Source =
             source;
 
@@ -72,6 +113,26 @@ public sealed class PermissionRule
         CapabilitySource source,
         string permission)
     {
+        return
+            Matches(
+                null,
+                source,
+                permission);
+    }
+
+    public bool Matches(
+        string? capabilityId,
+        CapabilitySource source,
+        string permission)
+    {
+        if (CapabilityId is not null
+            && !CapabilityId.Equals(
+                capabilityId,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
         if (Source.HasValue
             && Source.Value != source)
         {

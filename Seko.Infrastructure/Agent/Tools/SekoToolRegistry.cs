@@ -34,6 +34,20 @@ public sealed class SekoToolRegistry
         }
     }
 
+    public bool Unregister(
+        string toolName)
+    {
+        if (string.IsNullOrWhiteSpace(
+                toolName))
+        {
+            return false;
+        }
+
+        return
+            _handlers.Remove(
+                toolName);
+    }
+
     public async Task<string> ExecuteAsync(
         string toolName,
         string argumentsJson,
