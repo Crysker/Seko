@@ -242,8 +242,9 @@ public sealed class SekoTaskLogger
 
                 session.FinalResponse =
                     SanitizeAndTruncate(
-                        finalResponse
-                        ?? string.Empty,
+                        Seko.Infrastructure.Agent.SekoAssistantOutputSanitizer.Sanitize(
+                            finalResponse
+                            ?? string.Empty),
                         MaximumFinalResponseLength);
 
                 WriteSnapshotLocked(

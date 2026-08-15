@@ -97,9 +97,10 @@ public sealed class SekoTransactionalAgent :
         try
         {
             var response =
-                await _innerAgent.SendAsync(
-                    conversation,
-                    cancellationToken);
+                SekoAssistantOutputSanitizer.Sanitize(
+                    await _innerAgent.SendAsync(
+                        conversation,
+                        cancellationToken));
 
             if (_completedObserved)
             {
@@ -181,9 +182,10 @@ public sealed class SekoTransactionalAgent :
         try
         {
             var response =
-                await _innerAgent.SendAsync(
-                    conversation,
-                    cancellationToken);
+                SekoAssistantOutputSanitizer.Sanitize(
+                    await _innerAgent.SendAsync(
+                        conversation,
+                        cancellationToken));
 
             _taskLogger.TryFinish(
                 logSession,
