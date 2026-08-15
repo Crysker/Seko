@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Seko.Infrastructure.Agent;
 
 public sealed class SekoAutonomyController
@@ -24,7 +26,10 @@ public sealed class SekoAutonomyController
         return new SekoAutonomyState
         {
             WorkspaceModificationAllowed =
-                _requirements.RequiresModification
+                _requirements.RequiresModification,
+
+            ProjectExplanationEvidenceRequired =
+                _requirements.RequiresProjectExplanationEvidence
         };
     }
 
@@ -95,6 +100,48 @@ public sealed class SekoAutonomyController
                     state.PhaseModelRounds + 1
             },
             $"Model round started in {state.Phase}.");
+    }
+
+    public SekoAutonomyDecision ApplyModelResponseWithoutTools(
+        SekoAutonomyState state)
+    {
+        ArgumentNullException.ThrowIfNull(
+            state);
+
+        if (state.IsTerminal)
+        {
+            return DecisionForTerminalState(
+                state);
+        }
+
+        if (state.Phase
+            == SekoAutonomyPhase.Inspection)
+        {
+            if (_requirements.RequiresProjectExplanationEvidence)
+            {
+                return CompleteInspection(
+                    state);
+            }
+
+            if (state.WorkspaceEvidenceObserved)
+            {
+                return CompleteInspection(
+                    state);
+            }
+
+            return RecordNoProgress(
+                state);
+        }
+
+        if (state.Phase
+            == SekoAutonomyPhase.Synthesis)
+        {
+            return CompleteSynthesis(
+                state);
+        }
+
+        return RecordNoProgress(
+            state);
     }
 
     public SekoAutonomyDecision ApplySignal(
@@ -193,6 +240,14 @@ public sealed class SekoAutonomyController
                 outcome,
                 signal);
 
+            if (signal
+                == SekoAutonomySignal.WorkspaceEvidenceObserved)
+            {
+                return RecordWorkspaceEvidence(
+                    state,
+                    outcome);
+            }
+
             return ApplySignal(
                 state,
                 signal,
@@ -267,7 +322,8 @@ public sealed class SekoAutonomyController
     }
 
     private SekoAutonomyDecision RecordNoProgress(
-        SekoAutonomyState state)
+        SekoAutonomyState state,
+        string? reason = null)
     {
         var noProgressRounds =
             state.ConsecutiveNoProgressRounds + 1;
@@ -282,14 +338,23 @@ public sealed class SekoAutonomyController
         if (noProgressRounds
             >= _budgetPolicy.MaximumConsecutiveNoProgressRounds)
         {
+            var stallReason =
+                $"No meaningful progress for {noProgressRounds} consecutive rounds in {state.Phase}.";
+
             return Incomplete(
                 updated,
-                $"No meaningful progress for {noProgressRounds} consecutive rounds in {state.Phase}.");
+                string.IsNullOrWhiteSpace(
+                    reason)
+                    ? stallReason
+                    : reason + " " + stallReason);
         }
 
         return Continue(
             updated,
-            "No meaningful progress recorded; the controller permits one bounded strategy change.");
+            string.IsNullOrWhiteSpace(
+                reason)
+                ? "No meaningful progress recorded; the controller permits one bounded strategy change."
+                : reason);
     }
 
     private SekoAutonomyDecision CompleteResearch(
@@ -315,14 +380,15 @@ public sealed class SekoAutonomyController
     }
 
     private SekoAutonomyDecision RecordWorkspaceEvidence(
-        SekoAutonomyState state)
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome? outcome = null)
     {
         EnsurePhase(
             state,
             SekoAutonomyPhase.Inspection,
             nameof(SekoAutonomySignal.WorkspaceEvidenceObserved));
 
-        return Continue(
+        var updated =
             state with
             {
                 WorkspaceEvidenceObserved =
@@ -330,8 +396,21 @@ public sealed class SekoAutonomyController
 
                 ConsecutiveNoProgressRounds =
                     0
-            },
-            "Workspace evidence observed; inspection may continue until the model is ready to advance.");
+            };
+
+        if (outcome is not null)
+        {
+            updated =
+                ApplyProjectEvidenceObservation(
+                    updated,
+                    outcome);
+        }
+
+        return Continue(
+            updated,
+            outcome is null
+                ? "Workspace evidence observed; inspection may continue until the model is ready to advance."
+                : $"Workspace evidence observed from '{outcome.ToolName}'; inspection may continue until the evidence gate is satisfied.");
     }
 
     private SekoAutonomyDecision CompleteInspection(
@@ -341,6 +420,33 @@ public sealed class SekoAutonomyController
             state,
             SekoAutonomyPhase.Inspection,
             nameof(SekoAutonomySignal.InspectionCompleted));
+
+        if (_requirements.RequiresProjectExplanationEvidence)
+        {
+            var gate =
+                EvaluateProjectExplanationEvidence(
+                    state);
+
+            if (!gate.Satisfied)
+            {
+                return RecordNoProgress(
+                    state,
+                    gate.Reason);
+            }
+
+            var projectUpdated =
+                state with
+                {
+                    WorkspaceEvidenceObserved =
+                        true
+                };
+
+            return Continue(
+                Transition(
+                    projectUpdated,
+                    SelectPhaseAfterInspection()),
+                gate.Reason);
+        }
 
         var updated =
             state with
@@ -544,8 +650,21 @@ public sealed class SekoAutonomyController
             return "Completion blocked because required research evidence was not recorded.";
         }
 
-        if (NeedsInspection()
-            && !state.WorkspaceEvidenceObserved)
+        if (_requirements.RequiresProjectExplanationEvidence)
+        {
+            var projectEvidenceGate =
+                EvaluateProjectExplanationEvidence(
+                    state);
+
+            if (!projectEvidenceGate.Satisfied)
+            {
+                return
+                    "Completion blocked because " +
+                    projectEvidenceGate.Reason;
+            }
+        }
+        else if (NeedsInspection()
+                 && !state.WorkspaceEvidenceObserved)
         {
             return "Completion blocked because required workspace evidence was not recorded.";
         }
@@ -571,6 +690,530 @@ public sealed class SekoAutonomyController
 
         return null;
     }
+
+    private static SekoAutonomyState ApplyProjectEvidenceObservation(
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome outcome)
+    {
+        var updated =
+            state;
+
+        if (outcome.ToolName.Equals(
+                "list_files",
+                StringComparison.Ordinal)
+            && IsRecursiveRootInventory(
+                outcome.ArgumentsJson))
+        {
+            var inventory =
+                ParseProjectInventory(
+                    outcome.Detail);
+
+            updated =
+                updated with
+                {
+                    ProjectInventoryObserved =
+                        true,
+
+                    ProjectInventoryDirectoryCount =
+                        inventory.DirectoryCount,
+
+                    ProjectInventoryFiles =
+                        inventory.Files
+                };
+        }
+
+        if (outcome.ToolName is
+            "read_file"
+            or "find_text")
+        {
+            var inspectedPath =
+                GetStringArgument(
+                    outcome.ArgumentsJson,
+                    "path")
+                ?? ExtractFilePath(
+                    outcome.Detail);
+
+            if (!string.IsNullOrWhiteSpace(
+                    inspectedPath))
+            {
+                updated =
+                    updated with
+                    {
+                        InspectedWorkspaceFiles =
+                            AddDistinctPath(
+                                updated.InspectedWorkspaceFiles,
+                                inspectedPath)
+                    };
+            }
+        }
+
+        return updated;
+    }
+
+    private static SekoProjectExplanationEvidenceGate
+        EvaluateProjectExplanationEvidence(
+            SekoAutonomyState state)
+    {
+        if (!state.ProjectInventoryObserved)
+        {
+            return new SekoProjectExplanationEvidenceGate(
+                false,
+                "Project explanation evidence gate BLOCKED: inventory=False; " +
+                $"inspected_files={state.InspectedWorkspaceFiles.Count}. " +
+                "Missing: run list_files on the workspace root with recursive=true before synthesis.");
+        }
+
+        var relevantInventoryFiles =
+            state.ProjectInventoryFiles
+                .Where(
+                    IsProjectExplanationRelevantFile)
+                .Distinct(
+                    StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+        if (relevantInventoryFiles.Length == 0)
+        {
+            return new SekoProjectExplanationEvidenceGate(
+                true,
+                "Project explanation evidence gate SATISFIED: inventory=True; " +
+                $"inventory_files={state.ProjectInventoryFiles.Count}; " +
+                $"inventory_dirs={state.ProjectInventoryDirectoryCount}; " +
+                "relevant_files=0; inspected_relevant=0/0; " +
+                "descriptor=not-required; source=not-required.");
+        }
+
+        var relevantSet =
+            new HashSet<string>(
+                relevantInventoryFiles,
+                StringComparer.OrdinalIgnoreCase);
+
+        var inspectedRelevantFiles =
+            state.InspectedWorkspaceFiles
+                .Where(
+                    relevantSet.Contains)
+                .Distinct(
+                    StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+        var requiredFileCount =
+            Math.Min(
+                3,
+                relevantInventoryFiles.Length);
+
+        var descriptorRequired =
+            relevantInventoryFiles.Any(
+                IsProjectDescriptor);
+
+        var sourceFileRequirement =
+            Math.Min(
+                2,
+                relevantInventoryFiles.Count(
+                    IsSourceFile));
+
+        var descriptorInspected =
+            inspectedRelevantFiles.Any(
+                IsProjectDescriptor);
+
+        var inspectedSourceFileCount =
+            inspectedRelevantFiles.Count(
+                IsSourceFile);
+
+        var missing =
+            new List<string>();
+
+        if (inspectedRelevantFiles.Length
+            < requiredFileCount)
+        {
+            missing.Add(
+                $"inspect {requiredFileCount - inspectedRelevantFiles.Length} more relevant file(s)");
+        }
+
+        if (descriptorRequired
+            && !descriptorInspected)
+        {
+            missing.Add(
+                "inspect a project/build descriptor");
+        }
+
+        if (inspectedSourceFileCount
+            < sourceFileRequirement)
+        {
+            missing.Add(
+                $"inspect {sourceFileRequirement - inspectedSourceFileCount} more source/entry-point file(s)");
+        }
+
+        var summary =
+            "inventory=True; " +
+            $"inventory_files={state.ProjectInventoryFiles.Count}; " +
+            $"inventory_dirs={state.ProjectInventoryDirectoryCount}; " +
+            $"relevant_files={relevantInventoryFiles.Length}; " +
+            $"inspected_relevant={inspectedRelevantFiles.Length}/{requiredFileCount}; " +
+            $"descriptor={(descriptorRequired ? descriptorInspected ? "inspected" : "missing" : "not-required")}; " +
+            $"source={inspectedSourceFileCount}/{sourceFileRequirement}";
+
+        if (missing.Count > 0)
+        {
+            return new SekoProjectExplanationEvidenceGate(
+                false,
+                "Project explanation evidence gate BLOCKED: " +
+                summary +
+                ". Missing: " +
+                string.Join(
+                    "; ",
+                    missing) +
+                ".");
+        }
+
+        return new SekoProjectExplanationEvidenceGate(
+            true,
+            "Project explanation evidence gate SATISFIED: " +
+            summary +
+            ".");
+    }
+
+    private static SekoProjectInventory ParseProjectInventory(
+        string? detail)
+    {
+        var files =
+            new List<string>();
+
+        var directoryCount =
+            0;
+
+        foreach (var rawLine
+                 in (detail ?? string.Empty)
+                    .Split(
+                        '\n',
+                        StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line =
+                rawLine.Trim();
+
+            if (line.StartsWith(
+                    "[FILE] ",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var path =
+                    NormalizeEvidencePath(
+                        line[7..]);
+
+                if (!string.IsNullOrWhiteSpace(
+                        path))
+                {
+                    files.Add(
+                        path);
+                }
+
+                continue;
+            }
+
+            if (line.StartsWith(
+                    "[DIR] ",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                directoryCount++;
+            }
+        }
+
+        return new SekoProjectInventory(
+            files
+                .Distinct(
+                    StringComparer.OrdinalIgnoreCase)
+                .OrderBy(
+                    path => path,
+                    StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            directoryCount);
+    }
+
+    private static bool IsRecursiveRootInventory(
+        string? argumentsJson)
+    {
+        if (string.IsNullOrWhiteSpace(
+                argumentsJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    argumentsJson);
+
+            var root =
+                document.RootElement;
+
+            var path =
+                root.TryGetProperty(
+                    "path",
+                    out var pathElement)
+                && pathElement.ValueKind
+                    == JsonValueKind.String
+                    ? pathElement.GetString()
+                      ?? string.Empty
+                    : string.Empty;
+
+            var recursive =
+                root.TryGetProperty(
+                    "recursive",
+                    out var recursiveElement)
+                && recursiveElement.ValueKind
+                    == JsonValueKind.True;
+
+            var normalizedPath =
+                NormalizeEvidencePath(
+                    path);
+
+            return recursive
+                && (string.IsNullOrWhiteSpace(
+                        normalizedPath)
+                    || normalizedPath.Equals(
+                        ".",
+                        StringComparison.Ordinal));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? GetStringArgument(
+        string? argumentsJson,
+        string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(
+                argumentsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    argumentsJson);
+
+            if (!document.RootElement.TryGetProperty(
+                    propertyName,
+                    out var property)
+                || property.ValueKind
+                    != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return property.GetString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? ExtractFilePath(
+        string? detail)
+    {
+        foreach (var rawLine
+                 in (detail ?? string.Empty)
+                    .Split(
+                        '\n',
+                        StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line =
+                rawLine.Trim();
+
+            if (!line.StartsWith(
+                    "FILE:",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return NormalizeEvidencePath(
+                line[5..]);
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> AddDistinctPath(
+        IReadOnlyList<string> paths,
+        string path)
+    {
+        var normalized =
+            NormalizeEvidencePath(
+                path);
+
+        if (string.IsNullOrWhiteSpace(
+                normalized))
+        {
+            return paths;
+        }
+
+        return paths
+            .Append(
+                normalized)
+            .Distinct(
+                StringComparer.OrdinalIgnoreCase)
+            .OrderBy(
+                item => item,
+                StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string NormalizeEvidencePath(
+        string? path)
+    {
+        var normalized =
+            (path ?? string.Empty)
+                .Trim()
+                .Replace(
+                    '\\',
+                    '/');
+
+        while (normalized.StartsWith(
+                   "./",
+                   StringComparison.Ordinal))
+        {
+            normalized =
+                normalized[2..];
+        }
+
+        return normalized;
+    }
+
+    private static bool IsProjectExplanationRelevantFile(
+        string path)
+    {
+        if (IsProjectDescriptor(
+                path)
+            || IsSourceFile(
+                path))
+        {
+            return true;
+        }
+
+        var fileName =
+            Path.GetFileName(
+                path);
+
+        if (fileName.StartsWith(
+                "README",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var extension =
+            Path.GetExtension(
+                path)
+                .ToLowerInvariant();
+
+        return extension is
+            ".md"
+            or ".txt"
+            or ".json"
+            or ".yaml"
+            or ".yml"
+            or ".toml"
+            or ".xml"
+            or ".config"
+            or ".props"
+            or ".targets"
+            or ".ps1"
+            or ".sh";
+    }
+
+    private static bool IsProjectDescriptor(
+        string path)
+    {
+        var fileName =
+            Path.GetFileName(
+                path);
+
+        if (fileName.Equals(
+                "package.json",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "pyproject.toml",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "Cargo.toml",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "go.mod",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "pom.xml",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "build.gradle",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "build.gradle.kts",
+                StringComparison.OrdinalIgnoreCase)
+            || fileName.Equals(
+                "CMakeLists.txt",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var extension =
+            Path.GetExtension(
+                path)
+                .ToLowerInvariant();
+
+        return extension is
+            ".sln"
+            or ".csproj"
+            or ".fsproj"
+            or ".vbproj"
+            or ".vcxproj";
+    }
+
+    private static bool IsSourceFile(
+        string path)
+    {
+        var extension =
+            Path.GetExtension(
+                path)
+                .ToLowerInvariant();
+
+        return extension is
+            ".cs"
+            or ".fs"
+            or ".vb"
+            or ".xaml"
+            or ".js"
+            or ".jsx"
+            or ".ts"
+            or ".tsx"
+            or ".py"
+            or ".java"
+            or ".kt"
+            or ".kts"
+            or ".cpp"
+            or ".c"
+            or ".h"
+            or ".hpp"
+            or ".go"
+            or ".rs"
+            or ".swift"
+            or ".php"
+            or ".rb"
+            or ".vue"
+            or ".svelte";
+    }
+
+    private sealed record SekoProjectInventory(
+        IReadOnlyList<string> Files,
+        int DirectoryCount);
+
+    private sealed record SekoProjectExplanationEvidenceGate(
+        bool Satisfied,
+        string Reason);
 
     private SekoAutonomyPhase SelectFirstExecutionPhase()
     {

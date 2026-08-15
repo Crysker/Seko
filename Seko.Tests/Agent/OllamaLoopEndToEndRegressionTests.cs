@@ -414,6 +414,148 @@ public sealed class OllamaLoopEndToEndRegressionTests
     }
 
     [Fact]
+    public async Task ProjectExplanation_PrematureSynthesisIsBlockedUntilEvidenceGateIsSatisfied()
+    {
+        var transport =
+            new ScriptedOllamaChatTransport(
+                ToolResponse(
+                    ("search_workspace", "{\"query\":\"project purpose\"}")),
+                MessageResponse(
+                    "The project file tells me enough."),
+                ToolResponse(
+                    ("list_files", "{\"path\":\"\",\"recursive\":true}")),
+                ToolResponse(
+                    ("read_file", "{\"path\":\"SekoReadOnlyTest.csproj\"}"),
+                    ("read_file", "{\"path\":\"Program.cs\"}"),
+                    ("read_file", "{\"path\":\"Greeter.cs\"}")),
+                MessageResponse(
+                    "Inspection is complete."),
+                MessageResponse(
+                    "Grounded project explanation."));
+
+        var toolHost =
+            new ScriptedToolHost();
+
+        toolHost.QueueResult(
+            "search_workspace",
+            """
+            WORKSPACE SEARCH: project purpose
+            SCANNED FILES: 4
+            RESULTS: 1
+
+            #1 SekoReadOnlyTest.csproj
+            """);
+
+        toolHost.QueueResult(
+            "list_files",
+            """
+            [FILE] Greeter.cs
+            [FILE] Program.cs
+            [FILE] README.md
+            [FILE] SekoReadOnlyTest.csproj
+            """);
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: SekoReadOnlyTest.csproj\nTOTAL LINES: 6\n\n<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: Program.cs\nTOTAL LINES: 4\n\nvar greeter = new Greeter();");
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: Greeter.cs\nTOTAL LINES: 8\n\npublic sealed class Greeter { }");
+
+        var agent =
+            CreateAgent(
+                toolHost,
+                transport);
+
+        var diagnostics =
+            new List<SekoDiagnosticEvent>();
+
+        agent.DiagnosticEvent +=
+            diagnostics.Add;
+
+        var response =
+            await agent.SendAsync(
+                UserConversation(
+                    "Inspect the files in the current workspace, then explain what this project does. Do not change any files."));
+
+        Assert.Equal(
+            "Grounded project explanation.",
+            response.Content);
+
+        Assert.Equal(
+            new[]
+            {
+                "search_workspace",
+                "list_files",
+                "read_file",
+                "read_file",
+                "read_file"
+            },
+            toolHost.ExecutedCalls
+                .Select(
+                    call => call.ToolName)
+                .ToArray());
+
+        Assert.Equal(
+            6,
+            transport.Requests.Count);
+
+        AssertToolNames(
+            transport.Requests[0],
+            InspectionTools);
+
+        AssertToolNames(
+            transport.Requests[1],
+            InspectionTools);
+
+        AssertToolNames(
+            transport.Requests[4],
+            InspectionTools);
+
+        AssertToolNames(
+            transport.Requests[5],
+            Array.Empty<string>());
+
+        var gateDecisions =
+            diagnostics
+                .Where(
+                    diagnostic =>
+                        diagnostic.Name.Equals(
+                            "host.autonomy_evidence_gate",
+                            StringComparison.Ordinal))
+                .ToArray();
+
+        Assert.Equal(
+            2,
+            gateDecisions.Length);
+
+        Assert.Contains(
+            "Project explanation evidence gate BLOCKED",
+            gateDecisions[0].Result ?? string.Empty,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Project explanation evidence gate SATISFIED",
+            gateDecisions[1].Result ?? string.Empty,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "project_inventory_files=4",
+            gateDecisions[1].Arguments ?? string.Empty,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "project_inspected_files=3",
+            gateDecisions[1].Arguments ?? string.Empty,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task FastConversation_UsesInjectedTransportWithoutStartingToolTask()
     {
         var transport =

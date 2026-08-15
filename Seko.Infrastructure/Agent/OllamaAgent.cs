@@ -252,8 +252,15 @@ public sealed class OllamaAgent :
                         autonomyController,
                         autonomyState);
 
+                var autonomyModelResponseEvent =
+                    phaseBefore
+                        == SekoAutonomyPhase.Inspection
+                    && taskIntent.RequiresProjectExplanationEvidence
+                        ? "host.autonomy_evidence_gate"
+                        : "host.autonomy_model_response";
+
                 ReportAutonomyDecision(
-                    "host.autonomy_model_response",
+                    autonomyModelResponseEvent,
                     noToolDecision);
 
                 autonomyState =
@@ -544,7 +551,8 @@ public sealed class OllamaAgent :
                         autonomyState,
                         toolName,
                         result,
-                        toolSucceeded);
+                        toolSucceeded,
+                        argumentsJson);
 
                 var autonomyToolDecision =
                     autonomyController.ApplyToolOutcome(
@@ -1264,6 +1272,26 @@ public sealed class OllamaAgent :
             repair errors introduced by the task,
             then rebuild.
 
+            PROJECT EXPLANATION EVIDENCE
+            When the CURRENT TASK asks you to explain, describe, summarize or
+            give an overview of the active project/workspace, the host enforces
+            an evidence-sufficiency gate before synthesis.
+
+            For those tasks:
+            1. Start with list_files on the workspace root using recursive=true.
+            2. Inspect the project/build descriptor when one exists.
+            3. Inspect source/entry-point code when source files exist.
+            4. If fewer than three relevant files exist, inspect all of them.
+               Otherwise inspect at least three representative relevant files.
+            5. If at least two source files exist, inspect at least two
+               source/entry-point files so an explanation is not based on one
+               isolated snippet.
+            6. search_workspace and find_files are discovery tools. A zero-match
+               search is NoChange and is not evidence progress.
+            7. Do not synthesize merely because one search returned one project
+               file. Continue until the host evidence gate explicitly allows
+               the phase transition.
+
             TOOL RULE
             If the user asks you to inspect, edit, implement, fix, create,
             remove, redesign, build or otherwise work on the active workspace,
@@ -1813,6 +1841,11 @@ public sealed class OllamaAgent :
             $"verified_generation={state.VerifiedModificationGeneration}; " +
             $"research_completed={state.ResearchCompleted}; " +
             $"workspace_evidence={state.WorkspaceEvidenceObserved}; " +
+            $"project_evidence_required={state.ProjectExplanationEvidenceRequired}; " +
+            $"project_inventory={state.ProjectInventoryObserved}; " +
+            $"project_inventory_files={state.ProjectInventoryFiles.Count}; " +
+            $"project_inventory_dirs={state.ProjectInventoryDirectoryCount}; " +
+            $"project_inspected_files={state.InspectedWorkspaceFiles.Count}; " +
             $"write_allowed={state.WorkspaceModificationAllowed}";
 
         ReportDiagnostic(
