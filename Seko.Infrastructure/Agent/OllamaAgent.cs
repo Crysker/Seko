@@ -114,6 +114,18 @@ public sealed class OllamaAgent :
             taskIntent.RequiresWorkspaceTools
             || requiresWebResearch;
 
+        var autonomyController =
+            SekoAutonomyLiveLoop.CreateController(
+                taskIntent,
+                requiresWebResearch);
+
+        var autonomyDecision =
+            autonomyController.Start(
+                autonomyController.CreateInitialState());
+
+        var autonomyState =
+            autonomyDecision.State;
+
         var messages =
             BuildMessages(
                 conversation,
@@ -145,7 +157,7 @@ public sealed class OllamaAgent :
         var workspaceToolCallCount =
             0;
 
-        SekoExecutionPhase? lastExecutionPhase =
+        SekoAutonomyPhase? lastExecutionPhase =
             null;
 
         var modificationGeneration =
@@ -179,12 +191,23 @@ public sealed class OllamaAgent :
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            var roundDecision =
+                autonomyController.BeginModelRound(
+                    autonomyState);
+
+            autonomyState =
+                roundDecision.State;
+
+            if (roundDecision.Disposition
+                == SekoAutonomyDisposition.Incomplete)
+            {
+                return FinishIncompleteTask(
+                    roundDecision.Reason);
+            }
+
             var toolPlan =
-                SekoToolSelectionPlanner.Create(
-                    currentTask,
-                    taskIntent,
-                    requiresWebResearch,
-                    webResearchCompleted);
+                SekoAutonomyToolPlanner.Create(
+                    autonomyState);
 
             if (toolPlan.Phase
                 != lastExecutionPhase)
@@ -265,6 +288,37 @@ public sealed class OllamaAgent :
 
             if (!hasToolCalls)
             {
+                var phaseDecision =
+                    SekoAutonomyLiveLoop.ApplyNoToolResponse(
+                        autonomyController,
+                        autonomyState,
+                        anyWorkspaceToolExecuted);
+
+                if (phaseDecision is not null)
+                {
+                    autonomyState =
+                        phaseDecision.State;
+
+                    if (phaseDecision.Disposition
+                        == SekoAutonomyDisposition.Incomplete)
+                    {
+                        return FinishIncompleteTask(
+                            phaseDecision.Reason);
+                    }
+
+                    if (phaseDecision.Disposition
+                        == SekoAutonomyDisposition.Complete)
+                    {
+                        return await FinishTaskAsync(
+                            content,
+                            currentTask,
+                            taskIntent.RequiresWorkspaceTools,
+                            cancellationToken);
+                    }
+
+                    continue;
+                }
+
                 if (taskIntent.RequiresWorkspaceTools
                     && !anyWorkspaceToolExecuted
                     && (!requiresWebResearch
@@ -541,15 +595,7 @@ public sealed class OllamaAgent :
                 }
 
                 if (!toolPlan.Allows(
-                        toolName)
-                    || (webResearchCompleted
-                        && (toolPlan.Phase
-                                == SekoExecutionPhase.Research
-                            || toolPlan.Phase
-                                == SekoExecutionPhase.DirectWebFetch)
-                        && toolName.StartsWith(
-                            "web_",
-                            StringComparison.Ordinal)))
+                        toolName))
                 {
                     Report(
                         AgentActivityKind.Tool,
@@ -730,11 +776,9 @@ public sealed class OllamaAgent :
                         && (toolName.Equals(
                                 "web_research",
                                 StringComparison.Ordinal)
-                            || (toolName.Equals(
-                                    "web_fetch",
-                                    StringComparison.Ordinal)
-                                && toolPlan.Phase
-                                    == SekoExecutionPhase.DirectWebFetch)))
+                            || toolName.Equals(
+                                "web_fetch",
+                                StringComparison.Ordinal)))
                     {
                         webResearchCompleted =
                             true;
@@ -776,6 +820,27 @@ public sealed class OllamaAgent :
 
                     latestSuccessfulBuildGeneration =
                         modificationGeneration;
+                }
+
+                var autonomyToolDecision =
+                    SekoAutonomyLiveLoop.ApplyToolResult(
+                        autonomyController,
+                        autonomyState,
+                        toolName,
+                        result,
+                        toolSucceeded);
+
+                if (autonomyToolDecision is not null)
+                {
+                    autonomyState =
+                        autonomyToolDecision.State;
+
+                    if (autonomyToolDecision.Disposition
+                        == SekoAutonomyDisposition.Incomplete)
+                    {
+                        return FinishIncompleteTask(
+                            autonomyToolDecision.Reason);
+                    }
                 }
 
                 if (result.StartsWith(
