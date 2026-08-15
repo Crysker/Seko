@@ -231,6 +231,76 @@ public sealed class SekoTaskLoggerRegressionTests
                 true);
         }
     }
+
+    [Fact]
+    public void TryFinish_RemovesReasoningLeakFromFinalResponseLog()
+    {
+        var directory =
+            Path.Combine(
+                Path.GetTempPath(),
+                "SekoTaskLoggerRegressionTests",
+                Guid.NewGuid()
+                    .ToString("N"));
+
+        Directory.CreateDirectory(
+            directory);
+
+        try
+        {
+            var logger =
+                new SekoTaskLogger(
+                    directory);
+
+            var session =
+                logger.TryStart(
+                    new Workspace
+                    {
+                        Id =
+                            Guid.NewGuid(),
+
+                        Name =
+                            "Reasoning log boundary",
+
+                        RootPath =
+                            directory
+                    },
+                    "scripted-test-model",
+                    "Answer a question.");
+
+            Assert.NotNull(
+                session);
+
+            logger.TryFinish(
+                session,
+                "Completed",
+                "private hidden reasoning</think>Safe final answer.");
+
+            var log =
+                File.ReadAllText(
+                    session!.FilePath);
+
+            Assert.Contains(
+                "Safe final answer.",
+                log);
+
+            Assert.DoesNotContain(
+                "private hidden reasoning",
+                log,
+                StringComparison.OrdinalIgnoreCase);
+
+            Assert.DoesNotContain(
+                "</think>",
+                log,
+                StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(
+                directory,
+                true);
+        }
+    }
+
     private static string InvokePrivateStringMethod(
         string methodName,
         object[] arguments)
