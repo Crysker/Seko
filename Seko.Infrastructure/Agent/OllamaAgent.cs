@@ -17,17 +17,6 @@ public sealed class OllamaAgent :
     private const int MaximumConversationMessages = 8;
 
 
-    private static readonly HashSet<string> BuildRelevantExtensions =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ".cs",
-            ".xaml",
-            ".csproj",
-            ".sln",
-            ".props",
-            ".targets"
-        };
-
     private readonly Workspace _workspace;
     private readonly ISekoToolHost _toolHost;
     private readonly IOllamaChatTransport _chatTransport;
@@ -127,10 +116,16 @@ public sealed class OllamaAgent :
                 taskIntent,
                 requiresWebResearch);
 
-        var autonomyState =
+        var autonomyStartDecision =
             autonomyController.Start(
-                autonomyController.CreateInitialState())
-            .State;
+                autonomyController.CreateInitialState());
+
+        ReportAutonomyDecision(
+            "host.autonomy_start",
+            autonomyStartDecision);
+
+        var autonomyState =
+            autonomyStartDecision.State;
 
         var messages =
             BuildMessages(
@@ -153,6 +148,10 @@ public sealed class OllamaAgent :
             var roundDecision =
                 autonomyController.BeginModelRound(
                     autonomyState);
+
+            ReportAutonomyDecision(
+                "host.autonomy_round",
+                roundDecision);
 
             autonomyState =
                 roundDecision.State;
@@ -252,6 +251,10 @@ public sealed class OllamaAgent :
                     SekoAutonomyLiveLoop.ApplyModelResponseWithoutTools(
                         autonomyController,
                         autonomyState);
+
+                ReportAutonomyDecision(
+                    "host.autonomy_model_response",
+                    noToolDecision);
 
                 autonomyState =
                     noToolDecision.State;
@@ -521,6 +524,12 @@ public sealed class OllamaAgent :
                         autonomyState,
                         SekoAutonomySignal.MeaningfulProgress);
 
+                ReportAutonomyDecision(
+                    phaseToolDecision is null
+                        ? "host.autonomy_progress"
+                        : "host.autonomy_tool_result",
+                    autonomyToolDecision);
+
                 autonomyState =
                     autonomyToolDecision.State;
 
@@ -562,6 +571,10 @@ public sealed class OllamaAgent :
                     autonomyController.ApplySignal(
                         autonomyState,
                         SekoAutonomySignal.NoProgress);
+
+                ReportAutonomyDecision(
+                    "host.autonomy_stall",
+                    stalledDecision);
 
                 autonomyState =
                     stalledDecision.State;
@@ -657,6 +670,7 @@ public sealed class OllamaAgent :
             request,
             cancellationToken);
     }
+
     private async Task<ChatMessage> FinishTaskAsync(
         string content,
         string userRequest,
@@ -819,7 +833,9 @@ public sealed class OllamaAgent :
         return await _chatTransport.SendAsync(
             request,
             cancellationToken);
-    }    private static JsonArray BuildBoundedWorkspaceMessages(
+    }
+
+    private static JsonArray BuildBoundedWorkspaceMessages(
         JsonArray messages)
     {
         const int maximumSerializedCharacters =
@@ -1732,6 +1748,52 @@ public sealed class OllamaAgent :
                 StringComparison.OrdinalIgnoreCase);
     }
 
+    private void ReportAutonomyDecision(
+        string eventName,
+        SekoAutonomyDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(
+            decision);
+
+        var state =
+            decision.State;
+
+        bool? success =
+            decision.Disposition switch
+            {
+                SekoAutonomyDisposition.Complete =>
+                    true,
+
+                SekoAutonomyDisposition.Incomplete =>
+                    false,
+
+                _ =>
+                    null
+            };
+
+        var arguments =
+            $"phase={state.Phase}; " +
+            $"disposition={decision.Disposition}; " +
+            $"total_rounds={state.TotalModelRounds}; " +
+            $"phase_rounds={state.PhaseModelRounds}; " +
+            $"no_progress={state.ConsecutiveNoProgressRounds}; " +
+            $"repairs={state.RepairCycles}; " +
+            $"modification_generation={state.ModificationGeneration}; " +
+            $"verified_generation={state.VerifiedModificationGeneration}; " +
+            $"research_completed={state.ResearchCompleted}; " +
+            $"workspace_evidence={state.WorkspaceEvidenceObserved}; " +
+            $"write_allowed={state.WorkspaceModificationAllowed}";
+
+        ReportDiagnostic(
+            new SekoDiagnosticEvent(
+                DateTimeOffset.Now,
+                SekoDiagnosticEventKind.Autonomy,
+                eventName,
+                TimeSpan.Zero,
+                arguments,
+                decision.Reason,
+                success));
+    }
     private void ReportDiagnostic(
         SekoDiagnosticEvent diagnosticEvent)
     {

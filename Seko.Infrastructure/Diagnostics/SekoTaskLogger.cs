@@ -388,6 +388,10 @@ public sealed class SekoTaskLogger
             builder,
             session);
 
+        WriteAutonomySummary(
+            builder,
+            session);
+
         WriteDiagnosticSection(
             builder,
             session);
@@ -603,34 +607,6 @@ public sealed class SekoTaskLogger
         builder.AppendLine(
             $"- Total tool execution time: {FormatDuration(totalExecutionDuration)}");
 
-        var autonomyLimitEntry =
-            session.Entries
-                .LastOrDefault(
-                    entry =>
-                        entry.Name.Equals(
-                            "host.autonomy_limit",
-                            StringComparison.Ordinal));
-
-        if (autonomyLimitEntry is not null)
-        {
-            builder.AppendLine(
-                "- Autonomy ceiling: **Reached**");
-
-            if (!string.IsNullOrWhiteSpace(
-                    autonomyLimitEntry.Result))
-            {
-                builder.AppendLine(
-                    "- Autonomy ceiling detail: "
-                    + EscapeInline(
-                        autonomyLimitEntry.Result));
-            }
-        }
-        else
-        {
-            builder.AppendLine(
-                "- Autonomy ceiling: Not recorded");
-        }
-
         var byTool =
             toolEntries
                 .GroupBy(
@@ -747,6 +723,159 @@ public sealed class SekoTaskLogger
         builder.AppendLine();
     }
 
+    private static void WriteAutonomySummary(
+        StringBuilder builder,
+        TaskLogSession session)
+    {
+        builder.AppendLine(
+            "## Autonomy summary");
+
+        builder.AppendLine();
+
+        var entries =
+            session.Entries
+                .Where(
+                    entry =>
+                        entry.Category
+                            == nameof(
+                                SekoDiagnosticEventKind.Autonomy))
+                .ToList();
+
+        if (entries.Count == 0)
+        {
+            builder.AppendLine(
+                "_No autonomy controller decisions recorded._");
+
+            builder.AppendLine();
+
+            return;
+        }
+
+        var finalEntry =
+            entries[^1];
+
+        builder.AppendLine(
+            $"- Controller decisions: **{entries.Count}**");
+
+        builder.AppendLine(
+            $"- Final controller event: `{EscapeInline(finalEntry.Name)}`");
+
+        builder.AppendLine(
+            "- Final controller outcome: "
+            + (finalEntry.Success switch
+            {
+                true =>
+                    "**Complete**",
+
+                false =>
+                    "**Incomplete**",
+
+                null =>
+                    "**Continue**"
+            }));
+
+        if (!string.IsNullOrWhiteSpace(
+                finalEntry.Arguments))
+        {
+            builder.AppendLine(
+                "- Final controller state: "
+                + EscapeInline(
+                    finalEntry.Arguments));
+        }
+
+        if (!string.IsNullOrWhiteSpace(
+                finalEntry.Result))
+        {
+            builder.AppendLine(
+                "- Final controller reason: "
+                + EscapeInline(
+                    finalEntry.Result));
+        }
+
+        builder.AppendLine();
+        builder.AppendLine(
+            "### Autonomy timeline");
+
+        builder.AppendLine();
+
+        builder.AppendLine(
+            "| # | Time | Event | Outcome | State | Reason |");
+
+        builder.AppendLine(
+            "|---:|---|---|---|---|---|");
+
+        for (var index = 0;
+             index < entries.Count;
+             index++)
+        {
+            var entry =
+                entries[index];
+
+            var outcome =
+                entry.Success switch
+                {
+                    true =>
+                        "Complete",
+
+                    false =>
+                        "Incomplete",
+
+                    null =>
+                        "Continue"
+                };
+
+            builder.Append(
+                "| ");
+
+            builder.Append(
+                index + 1);
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                entry.Timestamp.ToString(
+                    "HH:mm:ss.fff",
+                    CultureInfo.InvariantCulture));
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                EscapeTableCell(
+                    entry.Name,
+                    80));
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                outcome);
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                EscapeTableCell(
+                    entry.Arguments
+                    ?? string.Empty,
+                    320));
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                EscapeTableCell(
+                    entry.Result
+                    ?? string.Empty,
+                    320));
+
+            builder.AppendLine(
+                " |");
+        }
+
+        builder.AppendLine();
+    }
     private static bool IsModelToolEntry(
         TaskLogEntry entry)
     {
@@ -1221,6 +1350,7 @@ public sealed class SekoTaskLogger
 public enum SekoDiagnosticEventKind
 {
     Tool,
+    Autonomy,
     Build,
     Git,
     Rollback

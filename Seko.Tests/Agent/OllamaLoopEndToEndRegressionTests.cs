@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
 using Seko.Infrastructure.Agent;
+using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Tests.Agent;
 
@@ -80,6 +81,12 @@ public sealed class OllamaLoopEndToEndRegressionTests
                 toolHost,
                 transport);
 
+        var diagnostics =
+            new List<SekoDiagnosticEvent>();
+
+        agent.DiagnosticEvent +=
+            diagnostics.Add;
+
         var response =
             await agent.SendAsync(
                 UserConversation(
@@ -132,8 +139,48 @@ public sealed class OllamaLoopEndToEndRegressionTests
         AssertToolNames(
             transport.Requests[4],
             Array.Empty<string>());
-    }
 
+        Assert.Contains(
+            diagnostics,
+            diagnostic =>
+                diagnostic.Kind
+                    == SekoDiagnosticEventKind.Autonomy
+                && diagnostic.Name.Equals(
+                    "host.autonomy_start",
+                    StringComparison.Ordinal)
+                && diagnostic.Arguments?.Contains(
+                    "phase=Inspection",
+                    StringComparison.Ordinal)
+                    == true);
+
+        Assert.Contains(
+            diagnostics,
+            diagnostic =>
+                diagnostic.Kind
+                    == SekoDiagnosticEventKind.Autonomy
+                && diagnostic.Name.Equals(
+                    "host.autonomy_tool_result",
+                    StringComparison.Ordinal)
+                && diagnostic.Arguments?.Contains(
+                    "phase=Verification",
+                    StringComparison.Ordinal)
+                    == true);
+
+        Assert.Contains(
+            diagnostics,
+            diagnostic =>
+                diagnostic.Kind
+                    == SekoDiagnosticEventKind.Autonomy
+                && diagnostic.Name.Equals(
+                    "host.autonomy_model_response",
+                    StringComparison.Ordinal)
+                && diagnostic.Success
+                    == true
+                && diagnostic.Arguments?.Contains(
+                    "phase=Complete",
+                    StringComparison.Ordinal)
+                    == true);
+    }
     [Fact]
     public async Task SameResponse_WriteAfterActionTransition_IsBlockedBeforeExecution()
     {

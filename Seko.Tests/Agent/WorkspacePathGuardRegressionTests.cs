@@ -20,10 +20,10 @@ public sealed class WorkspacePathGuardRegressionTests
                     "App",
                     "Example.cs"));
 
-        Assert.True(
-            resolved.StartsWith(
-                workspace.RootPath,
-                StringComparison.OrdinalIgnoreCase));
+        Assert.StartsWith(
+            workspace.RootPath,
+            resolved,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
