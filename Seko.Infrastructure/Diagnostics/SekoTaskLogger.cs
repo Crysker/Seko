@@ -56,7 +56,24 @@ public sealed class SekoTaskLogger
     private readonly string _logDirectory;
 
     public SekoTaskLogger()
+        : this(
+            null)
     {
+    }
+
+    public SekoTaskLogger(
+        string? logDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(
+                logDirectory))
+        {
+            _logDirectory =
+                Path.GetFullPath(
+                    logDirectory);
+
+            return;
+        }
+
         var localAppData =
             Environment.GetFolderPath(
                 Environment.SpecialFolder.LocalApplicationData);
@@ -367,6 +384,10 @@ public sealed class SekoTaskLogger
             builder,
             session);
 
+        WriteToolExecutionSummary(
+            builder,
+            session);
+
         WriteDiagnosticSection(
             builder,
             session);
@@ -492,6 +513,301 @@ public sealed class SekoTaskLogger
         }
 
         builder.AppendLine();
+    }
+
+    private static void WriteToolExecutionSummary(
+        StringBuilder builder,
+        TaskLogSession session)
+    {
+        builder.AppendLine(
+            "## Tool execution summary");
+
+        builder.AppendLine();
+
+        var toolEntries =
+            session.Entries
+                .Where(
+                    IsModelToolEntry)
+                .ToList();
+
+        if (toolEntries.Count == 0)
+        {
+            builder.AppendLine(
+                "_No model tool calls recorded._");
+
+            builder.AppendLine();
+
+            return;
+        }
+
+        var duplicateEntries =
+            toolEntries
+                .Where(
+                    IsBlockedDuplicate)
+                .ToList();
+
+        var phaseBlockedRequestCount =
+            session.Entries.Count(
+                entry =>
+                    entry.Name.Equals(
+                        "host.phase_tool_blocked",
+                        StringComparison.Ordinal));
+
+        var executedEntries =
+            toolEntries
+                .Where(
+                    entry =>
+                        !IsBlockedDuplicate(
+                            entry))
+                .ToList();
+
+        var successfulExecutions =
+            executedEntries.Count(
+                entry =>
+                    entry.Success
+                    == true);
+
+        var failedExecutions =
+            executedEntries.Count(
+                entry =>
+                    entry.Success
+                    == false);
+
+        var totalExecutionDuration =
+            TimeSpan.FromTicks(
+                executedEntries
+                    .Sum(
+                        entry =>
+                            entry.Duration
+                                .GetValueOrDefault()
+                                .Ticks));
+
+        builder.AppendLine(
+            $"- Model tool requests: **{toolEntries.Count}**");
+
+        builder.AppendLine(
+            $"- Executed tool calls: **{executedEntries.Count}**");
+
+        builder.AppendLine(
+            $"- Successful executions: **{successfulExecutions}**");
+
+        builder.AppendLine(
+            $"- Failed/cancelled executions: **{failedExecutions}**");
+
+        builder.AppendLine(
+            $"- Blocked semantic duplicates: **{duplicateEntries.Count}**");
+
+        builder.AppendLine(
+            $"- Blocked out-of-phase requests: **{phaseBlockedRequestCount}**");
+
+        builder.AppendLine(
+            $"- Total tool execution time: {FormatDuration(totalExecutionDuration)}");
+
+        var autonomyLimitEntry =
+            session.Entries
+                .LastOrDefault(
+                    entry =>
+                        entry.Name.Equals(
+                            "host.autonomy_limit",
+                            StringComparison.Ordinal));
+
+        if (autonomyLimitEntry is not null)
+        {
+            builder.AppendLine(
+                "- Autonomy ceiling: **Reached**");
+
+            if (!string.IsNullOrWhiteSpace(
+                    autonomyLimitEntry.Result))
+            {
+                builder.AppendLine(
+                    "- Autonomy ceiling detail: "
+                    + EscapeInline(
+                        autonomyLimitEntry.Result));
+            }
+        }
+        else
+        {
+            builder.AppendLine(
+                "- Autonomy ceiling: Not recorded");
+        }
+
+        var byTool =
+            toolEntries
+                .GroupBy(
+                    entry =>
+                        entry.Name,
+                    StringComparer.Ordinal)
+                .OrderByDescending(
+                    group =>
+                        group.Count())
+                .ThenBy(
+                    group =>
+                        group.Key,
+                    StringComparer.Ordinal)
+                .Select(
+                    group =>
+                        $"{group.Key}={group.Count()}");
+
+        builder.AppendLine(
+            "- Requests by tool: "
+            + string.Join(
+                ", ",
+                byTool));
+
+        builder.AppendLine();
+        builder.AppendLine(
+            "### Tool timeline");
+
+        builder.AppendLine();
+        builder.AppendLine(
+            "| # | Time | Tool | Outcome | Duplicate | Duration | Arguments |");
+
+        builder.AppendLine(
+            "|---:|---|---|---|---|---:|---|");
+
+        for (var index = 0;
+             index < toolEntries.Count;
+             index++)
+        {
+            var entry =
+                toolEntries[index];
+
+            var duplicate =
+                IsBlockedDuplicate(
+                    entry);
+
+            var outcome =
+                duplicate
+                    ? "Blocked duplicate"
+                    : entry.Success switch
+                    {
+                        true => "Success",
+                        false => "Failed",
+                        null => "Informational"
+                    };
+
+            builder.Append(
+                "| ");
+
+            builder.Append(
+                index + 1);
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                entry.Timestamp.ToString(
+                    "HH:mm:ss.fff",
+                    CultureInfo.InvariantCulture));
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                EscapeTableCell(
+                    entry.Name,
+                    80));
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                outcome);
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                duplicate
+                    ? "Yes"
+                    : "No");
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                entry.Duration.HasValue
+                    ? FormatDuration(
+                        entry.Duration.Value)
+                    : "-");
+
+            builder.Append(
+                " | ");
+
+            builder.Append(
+                EscapeTableCell(
+                    entry.Arguments
+                    ?? string.Empty,
+                    240));
+
+            builder.AppendLine(
+                " |");
+        }
+
+        builder.AppendLine();
+    }
+
+    private static bool IsModelToolEntry(
+        TaskLogEntry entry)
+    {
+        if (entry.Name.StartsWith(
+                "host.",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (entry.Name.Equals(
+                "auto_commit",
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return
+            entry.Category
+                is "Tool"
+                or "Build"
+                or "Git";
+    }
+
+    private static bool IsBlockedDuplicate(
+        TaskLogEntry entry)
+    {
+        return
+            entry.Result?.Contains(
+                "Repeated semantic tool call blocked",
+                StringComparison.OrdinalIgnoreCase)
+            == true;
+    }
+
+    private static string EscapeTableCell(
+        string value,
+        int maximumLength)
+    {
+        var normalized =
+            SanitizeAndTruncate(
+                    value,
+                    maximumLength)
+                .Replace(
+                    "\r",
+                    " ",
+                    StringComparison.Ordinal)
+                .Replace(
+                    "\n",
+                    " ",
+                    StringComparison.Ordinal)
+                .Replace(
+                    "|",
+                    "\\|",
+                    StringComparison.Ordinal)
+                .Trim();
+
+        return
+            string.IsNullOrWhiteSpace(
+                normalized)
+                ? "-"
+                : normalized;
     }
 
     private static void WriteDiagnosticSection(

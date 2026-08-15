@@ -120,6 +120,223 @@ public sealed class WebResearchService
                 maxResults);
     }
 
+    public async Task<WebResearchPacket> ResearchAsync(
+        string query,
+        int maxSources = 2,
+        int maxCharactersPerSource = 2_500,
+        CancellationToken cancellationToken = default)
+    {
+        maxSources =
+            Math.Clamp(
+                maxSources,
+                1,
+                3);
+
+        maxCharactersPerSource =
+            Math.Clamp(
+                maxCharactersPerSource,
+                2_000,
+                4_000);
+
+        var searchResults =
+            await SearchAsync(
+                query,
+                8,
+                cancellationToken);
+
+        if (searchResults.Count == 0)
+        {
+            return
+                new WebResearchPacket(
+                    query.Trim(),
+                    0,
+                    Array.Empty<WebResearchEvidence>());
+        }
+
+        var candidates =
+            SelectResearchCandidates(
+                searchResults,
+                maxSources);
+
+        var fetchTasks =
+            candidates
+                .Select(
+                    result =>
+                        FetchEvidenceAsync(
+                            result,
+                            maxCharactersPerSource,
+                            cancellationToken))
+                .ToArray();
+
+        var evidence =
+            await Task.WhenAll(
+                fetchTasks);
+
+        return
+            new WebResearchPacket(
+                query.Trim(),
+                searchResults.Count,
+                evidence);
+    }
+
+    internal static IReadOnlyCollection<WebSearchResult> SelectResearchCandidates(
+        IEnumerable<WebSearchResult> results,
+        int maxSources)
+    {
+        ArgumentNullException.ThrowIfNull(
+            results);
+
+        maxSources =
+            Math.Clamp(
+                maxSources,
+                1,
+                3);
+
+        var materialized =
+            results
+                .Where(
+                    result =>
+                        !string.IsNullOrWhiteSpace(
+                            result.Url))
+                .Take(
+                    8)
+                .ToList();
+
+        var selected =
+            new List<WebSearchResult>();
+
+        var selectedUrls =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+        var selectedHosts =
+            new HashSet<string>(
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var result
+                 in materialized)
+        {
+            if (selected.Count
+                >= maxSources)
+            {
+                break;
+            }
+
+            if (!Uri.TryCreate(
+                    result.Url,
+                    UriKind.Absolute,
+                    out var uri))
+            {
+                continue;
+            }
+
+            if (!selectedHosts.Add(
+                    uri.Host))
+            {
+                continue;
+            }
+
+            if (!selectedUrls.Add(
+                    result.Url))
+            {
+                continue;
+            }
+
+            selected.Add(
+                result);
+        }
+
+        if (selected.Count
+            < maxSources)
+        {
+            foreach (var result
+                     in materialized)
+            {
+                if (selected.Count
+                    >= maxSources)
+                {
+                    break;
+                }
+
+                if (!selectedUrls.Add(
+                        result.Url))
+                {
+                    continue;
+                }
+
+                selected.Add(
+                    result);
+            }
+        }
+
+        return
+            selected.AsReadOnly();
+    }
+
+    private async Task<WebResearchEvidence> FetchEvidenceAsync(
+        WebSearchResult searchResult,
+        int maxCharacters,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var page =
+                await FetchAsync(
+                    searchResult.Url,
+                    maxCharacters,
+                    cancellationToken);
+
+            return
+                new WebResearchEvidence(
+                    searchResult,
+                    page,
+                    null);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            return
+                new WebResearchEvidence(
+                    searchResult,
+                    null,
+                    "Source fetch timed out.");
+        }
+        catch (Exception exception)
+            when (exception
+                  is HttpRequestException
+                  or InvalidOperationException
+                  or ArgumentException
+                  or IOException)
+        {
+            return
+                new WebResearchEvidence(
+                    searchResult,
+                    null,
+                    ShortenError(
+                        exception.Message));
+        }
+    }
+
+    private static string ShortenError(
+        string value)
+    {
+        var normalized =
+            string.IsNullOrWhiteSpace(
+                value)
+                ? "Source fetch failed."
+                : value.Trim();
+
+        return
+            normalized.Length <= 300
+                ? normalized
+                : normalized[..300]
+                  + "...";
+    }
+
     public async Task<WebFetchResult> FetchAsync(
         string url,
         int maxCharacters = 10_000,

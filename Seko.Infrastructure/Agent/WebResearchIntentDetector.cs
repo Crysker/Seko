@@ -26,7 +26,9 @@ public static class WebResearchIntentDetector
         "find sources",
         "with sources",
         "cite sources",
-        "citations"
+        "citations",
+        "official source",
+        "official sources"
     };
 
     private static readonly string[] FreshnessPhrases =

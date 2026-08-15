@@ -509,6 +509,68 @@ public sealed class SekoToolHost
                 EmptyParameters()),
 
             CreateFunctionTool(
+                "web_research",
+                """
+                Perform a complete bounded public-web research phase in one tool call.
+
+                This searches once, selects up to a few strong/diverse results, fetches
+                those pages concurrently, and returns one compact evidence packet.
+
+                Prefer this for research questions instead of manually chaining
+                web_search -> web_fetch -> web_fetch. Use web_fetch directly only when
+                the user gave a specific URL to read.
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["query"] =
+                                StringProperty(
+                                    "Public web research query. Include useful qualifiers such as official source, product name, version, date, or topic."),
+
+                            ["max_sources"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Maximum sources to fetch concurrently. Defaults to 2 and is capped at 3.",
+
+                                    ["minimum"] =
+                                        1,
+
+                                    ["maximum"] =
+                                        3
+                                },
+
+                            ["max_chars_per_source"] =
+                                new JsonObject
+                                {
+                                    ["type"] =
+                                        "integer",
+
+                                    ["description"] =
+                                        "Maximum readable characters per fetched source. Defaults to 2500 and is capped at 4000.",
+
+                                    ["minimum"] =
+                                        2000,
+
+                                    ["maximum"] =
+                                        4000
+                                }
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "query"
+                        }
+                }),            CreateFunctionTool(
                 "web_search",
                 """
                 Search the public web for current information and source discovery.
@@ -613,7 +675,57 @@ public sealed class SekoToolHost
         };
     }
 
-    public Task<string> ExecuteAsync(
+    public JsonArray CreateToolDefinitions(
+        IEnumerable<string> toolNames)
+    {
+        ArgumentNullException.ThrowIfNull(
+            toolNames);
+
+        var requested =
+            toolNames
+                .Where(
+                    name =>
+                        !string.IsNullOrWhiteSpace(
+                            name))
+                .Select(
+                    name =>
+                        name.Trim())
+                .ToHashSet(
+                    StringComparer.Ordinal);
+
+        if (requested.Count == 0)
+        {
+            return
+                new JsonArray();
+        }
+
+        var all =
+            CreateToolDefinitions();
+
+        var selected =
+            new JsonArray();
+
+        foreach (var definition
+                 in all)
+        {
+            var name =
+                definition?["function"]?["name"]
+                    ?.GetValue<string>();
+
+            if (string.IsNullOrWhiteSpace(
+                    name)
+                || !requested.Contains(
+                    name))
+            {
+                continue;
+            }
+
+            selected.Add(
+                definition!.DeepClone());
+        }
+
+        return selected;
+    }    public Task<string> ExecuteAsync(
         string toolName,
         string argumentsJson,
         CancellationToken cancellationToken = default)
