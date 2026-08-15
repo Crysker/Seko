@@ -103,6 +103,80 @@ public sealed class FastPathRouterRegressionTests
             decision.TaskIntent.RequiresModification);
     }
 
+    [Theory]
+    [InlineData(
+        "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it.")]
+    [InlineData(
+        "Can you modify your own source? Just a question.")]
+    [InlineData(
+        "Could you add a feature to Seko? Don't actually do it.")]
+    [InlineData(
+        "Are you able to refactor this repo? No action needed.")]
+    [InlineData(
+        "Take your time: can you improve your own code? Just a question.")]
+    public void Router_ExplicitNonActionCapabilityQuestionSuppressesExecution(
+        string request)
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                request);
+
+        Assert.True(
+            decision.UseFastConversation);
+
+        Assert.True(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.False(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.False(
+            decision.TaskIntent.RequiresModification);
+
+        Assert.False(
+            decision.RequiresWebResearch);
+    }
+
+    [Fact]
+    public void Router_CapabilityQuestionWithoutSuppressionRemainsActionable()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Can you fix the Stop button in Seko and build the solution?");
+
+        Assert.False(
+            decision.UseFastConversation);
+
+        Assert.False(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.True(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.True(
+            decision.TaskIntent.RequiresModification);
+    }
+
+    [Fact]
+    public void Router_ReadOnlyInspectionRequestIsNotOverSuppressed()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Read your own code and tell me what could be improved. Do not change any files.");
+
+        Assert.False(
+            decision.UseFastConversation);
+
+        Assert.False(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.True(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.False(
+            decision.TaskIntent.RequiresModification);
+    }
+
     [Fact]
     public void Router_ExplicitDeepAnalysisKeepsAgentPath()
     {

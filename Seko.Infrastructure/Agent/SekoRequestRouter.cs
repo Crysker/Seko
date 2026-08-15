@@ -40,14 +40,16 @@ public static class SekoRequestRouter
                 request);
 
         var requiresWebResearch =
-            WebResearchIntentDetector.RequiresWebResearch(
+            !taskIntent.ExecutionSuppressed
+            && WebResearchIntentDetector.RequiresWebResearch(
                 request);
 
         var useFastConversation =
-            !taskIntent.RequiresWorkspaceTools
-            && !requiresWebResearch
-            && IsSimpleConversation(
-                request);
+            taskIntent.ExecutionSuppressed
+            || (!taskIntent.RequiresWorkspaceTools
+                && !requiresWebResearch
+                && IsSimpleConversation(
+                    request));
 
         return
             new SekoRequestRoutingDecision(

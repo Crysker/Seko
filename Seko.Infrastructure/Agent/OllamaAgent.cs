@@ -87,7 +87,16 @@ public sealed class OllamaAgent :
             SekoRequestRouter.Route(
                 currentTask);
 
-        if (routingDecision.UseFastConversation)
+        var taskIntent =
+            routingDecision.TaskIntent;
+
+        /*
+            This is a second host-side execution boundary in addition to the
+            router. If routing logic changes later, an explicitly suppressed
+            capability question still cannot begin a workspace tool task.
+        */
+        if (routingDecision.UseFastConversation
+            || taskIntent.ExecutionSuppressed)
         {
             return await SendFastConversationAsync(
                 conversation,
@@ -100,9 +109,6 @@ public sealed class OllamaAgent :
 
         await _toolHost.BeginTaskAsync(
             cancellationToken);
-
-        var taskIntent =
-            routingDecision.TaskIntent;
 
         var requiresWebResearch =
             routingDecision.RequiresWebResearch;

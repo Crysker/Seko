@@ -6,7 +6,11 @@ public static class TaskIntentAnalyzer
         string request)
     {
         var normalized =
-            request.ToLowerInvariant();
+            request
+                .ToLowerInvariant()
+                .Replace(
+                    '\u2019',
+                    '\'');
 
         /*
             Explicit read-only wording wins over mutation keywords.
@@ -36,6 +40,54 @@ public static class TaskIntentAnalyzer
                 "inspect only",
                 "do not write",
                 "don't write");
+
+        /*
+            Capability questions can mention mutation verbs without granting
+            permission to execute them.
+
+            "Can you improve your own code? Just a question, not asking you
+            to do it." must stay conversational even though it contains
+            "improve", "code", and "your own".
+
+            Strong non-action qualifiers suppress execution on their own.
+            Softer wording such as "just a question" suppresses execution only
+            when paired with an explicit capability-question form.
+        */
+        var capabilityQuestion =
+            ContainsAnyPhrase(
+                normalized,
+                "can you",
+                "could you",
+                "would you be able to",
+                "are you able to",
+                "is it possible for you to",
+                "would it be possible for you to",
+                "do you have the ability to",
+                "are you capable of");
+
+        var explicitExecutionSuppression =
+            ContainsAnyPhrase(
+                normalized,
+                "not asking you to do it",
+                "not asking you to actually do it",
+                "i am not asking you to do it",
+                "i'm not asking you to do it",
+                "im not asking you to do it",
+                "not telling you to do it",
+                "don't actually do it",
+                "do not actually do it",
+                "no action needed",
+                "no action required",
+                "don't act on this",
+                "do not act on this",
+                "don't execute this",
+                "do not execute this")
+            || (capabilityQuestion
+                && ContainsAnyPhrase(
+                    normalized,
+                    "just a question",
+                    "just asking if",
+                    "only asking if"));
 
         var mutationWords =
             new[]
@@ -188,7 +240,8 @@ public static class TaskIntentAnalyzer
             };
 
         var requiresProjectExplanationEvidence =
-            projectExplanationTargets.Any(
+            !explicitExecutionSuppression
+            && projectExplanationTargets.Any(
                 normalized.Contains)
             && projectExplanationPhrases.Any(
                 normalized.Contains);
@@ -217,23 +270,26 @@ public static class TaskIntentAnalyzer
                 normalized.Contains);
 
         var requiresModification =
-            !explicitlyReadOnly
+            !explicitExecutionSuppression
+            && !explicitlyReadOnly
             && hasMutation
             && hasWorkspaceTarget;
 
         var requiresWorkspaceTools =
-            requiresProjectExplanationEvidence
-            || hasDiagnosticIntent
-            || (hasWorkspaceTarget
-                && (hasMutation
-                    || hasInspection
-                    || explicitBuildRequested));
+            !explicitExecutionSuppression
+            && (requiresProjectExplanationEvidence
+                || hasDiagnosticIntent
+                || (hasWorkspaceTarget
+                    && (hasMutation
+                        || hasInspection
+                        || explicitBuildRequested)));
 
         /*
             A direct self-development phrase should also count even when the
             user uses wording we did not explicitly enumerate above.
         */
-        if (!requiresWorkspaceTools
+        if (!explicitExecutionSuppression
+            && !requiresWorkspaceTools
             && hasMutation
             && (normalized.Contains("yourself")
                 || normalized.Contains("your own")
@@ -252,6 +308,9 @@ public static class TaskIntentAnalyzer
                 requiresModification,
                 explicitBuildRequested)
             {
+                ExecutionSuppressed =
+                    explicitExecutionSuppression,
+
                 RequiresProjectExplanationEvidence =
                     requiresProjectExplanationEvidence
             };

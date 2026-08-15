@@ -625,6 +625,50 @@ public sealed class OllamaLoopEndToEndRegressionTests
             Array.Empty<string>());
     }
 
+    [Fact]
+    public async Task ExplicitNonActionSelfDevelopmentQuestion_NeverStartsToolTask()
+    {
+        var transport =
+            new ScriptedOllamaChatTransport(
+                MessageResponse(
+                    "Yes. I can inspect and improve my own source when you explicitly ask me to make changes."));
+
+        var toolHost =
+            new ScriptedToolHost();
+
+        var agent =
+            CreateAgent(
+                toolHost,
+                transport);
+
+        var response =
+            await agent.SendAsync(
+                UserConversation(
+                    "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it."));
+
+        Assert.Equal(
+            "Yes. I can inspect and improve my own source when you explicitly ask me to make changes.",
+            response.Content);
+
+        Assert.Equal(
+            0,
+            toolHost.BeginTaskCallCount);
+
+        Assert.Equal(
+            0,
+            toolHost.AutoCommitCallCount);
+
+        Assert.Empty(
+            toolHost.ExecutedCalls);
+
+        Assert.Single(
+            transport.Requests);
+
+        AssertToolNames(
+            transport.Requests[0],
+            Array.Empty<string>());
+    }
+
     private static OllamaAgent CreateAgent(
         ScriptedToolHost toolHost,
         ScriptedOllamaChatTransport transport)

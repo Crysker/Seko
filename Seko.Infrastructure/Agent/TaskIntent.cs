@@ -5,5 +5,7 @@ public sealed record TaskIntent(
     bool RequiresModification,
     bool ExplicitBuildRequested)
 {
+    public bool ExecutionSuppressed { get; init; }
+
     public bool RequiresProjectExplanationEvidence { get; init; }
 }
