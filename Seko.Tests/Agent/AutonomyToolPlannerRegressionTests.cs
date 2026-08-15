@@ -150,11 +150,16 @@ public sealed class AutonomyToolPlannerRegressionTests
                 "find_text",
                 "list_files",
                 "read_file",
+                "verify_file",
                 "build_project",
                 "git_status",
                 "git_diff"
             },
             plan.ToolNames);
+
+        Assert.True(
+            plan.Allows(
+                "verify_file"));
 
         Assert.True(
             plan.Allows(

@@ -1303,6 +1303,7 @@ public sealed class OllamaAgent :
             -> inspect relevant source
             -> replace_text or write_file
             -> build_project when build-relevant source changed
+            -> verify_file when a non-build artifact changed
             -> final response
 
             Do not call the same tool with the same arguments repeatedly.
@@ -1376,14 +1377,20 @@ public sealed class OllamaAgent :
             3. Make the smallest sensible change.
             4. Prefer replace_text for focused edits.
             5. Build after C#, XAML, solution or project-file changes.
-            6. A build performed before the final modification does NOT verify
-               the final source.
-            7. If the build fails, use compiler output to repair the error.
-            8. Rebuild after every repair or later build-relevant modification.
-            9. Do not report a modification task as complete if no file was
-               actually modified.
-            10. Do not report a code task as complete until the final modified
-                source has built successfully.
+            6. For JSON, XML, config, Markdown, plain text and other non-build
+               artifacts, use verify_file after the final modification.
+            7. verify_file is host-owned: it re-reads the file, requires the
+               exact post-edit content to persist, and parses JSON/XML where
+               applicable. A pre-edit read never counts as verification.
+            8. A build or verify_file result produced before the final
+               modification does NOT verify the final state.
+            9. If verification fails, use the concrete failure evidence to
+               repair the file, then verify the repaired generation again.
+            10. Rebuild after every repair or later build-relevant modification.
+            11. Do not report a modification task as complete if no file was
+                actually modified.
+            12. Do not report a modification task as complete until the latest
+                modification generation has passed its required verifier.
 
             GIT SAFETY
             The host records whether Git was clean before the task began.
@@ -1624,6 +1631,9 @@ public sealed class OllamaAgent :
             "git_diff" =>
                 "The current diff is already known. Use it to decide the next edit/build/finalization step instead of requesting the same diff again.",
 
+            "verify_file" =>
+                "Use the deterministic verification result as authoritative evidence. If it failed, inspect the named file and repair the concrete persistence or structure problem before verifying again.",
+
             "build_project" when IsSuccessfulBuildResult(
                 previousResult) =>
                 "The current source already has a successful build result. If no later build-relevant modification occurred, finish the task rather than rebuilding unchanged source.",
@@ -1699,7 +1709,7 @@ public sealed class OllamaAgent :
                     "Use existing evidence to make the requested workspace modification. If the target is still uncertain, inspect one concrete candidate rather than repeating broad discovery.",
 
                 SekoAutonomyPhase.Verification =>
-                    "Verify the current workspace state with build_project and read-only evidence. Verification never grants write permission.",
+                    "Verify the latest modification with the correct host verifier. Use build_project for .cs, .xaml, .csproj, .sln, .props and .targets changes. Use verify_file for JSON, XML, config, Markdown, plain text and other non-build artifacts. Pre-edit reads do not satisfy verification. Verification never grants write permission.",
 
                 SekoAutonomyPhase.Repair =>
                     "Use the recorded verification failure to make one targeted repair within the original modification permission. Do not broaden the task.",
@@ -1992,6 +2002,12 @@ public sealed class OllamaAgent :
                     path)
                     ? "Inspecting workspace..."
                     : $"Listing {path}...",
+
+            "verify_file" =>
+                string.IsNullOrWhiteSpace(
+                    path)
+                    ? "Verifying changed artifact..."
+                    : $"Verifying {path}...",
 
             "read_file" =>
                 string.IsNullOrWhiteSpace(

@@ -237,6 +237,7 @@ public sealed class CapabilityRegistryRegressionTests
                 Handler(),
                 Handler(),
                 Handler(),
+                Handler(),
                 Handler());
 
         Assert.Contains(

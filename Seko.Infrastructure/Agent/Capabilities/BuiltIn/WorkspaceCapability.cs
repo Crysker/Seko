@@ -39,6 +39,7 @@ public sealed class WorkspaceCapability :
         SekoToolHandler findText,
         SekoToolHandler listFiles,
         SekoToolHandler readFile,
+        SekoToolHandler verifyFile,
         SekoToolHandler readTaskLog,
         SekoToolHandler writeFile,
         SekoToolHandler replaceText)
@@ -65,6 +66,10 @@ public sealed class WorkspaceCapability :
                 new SekoToolRegistration(
                     "read_file",
                     readFile),
+
+                new SekoToolRegistration(
+                    "verify_file",
+                    verifyFile),
 
                 new SekoToolRegistration(
                     "read_task_log",

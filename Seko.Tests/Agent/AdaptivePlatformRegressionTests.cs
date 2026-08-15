@@ -196,6 +196,7 @@ public sealed class AdaptivePlatformRegressionTests
                 Handler(),
                 Handler(),
                 Handler(),
+                Handler(),
                 Handler()),
             CapabilitySource.BuiltIn,
             SekoPermissionPolicy.CreateDefault(),

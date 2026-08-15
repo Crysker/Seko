@@ -58,6 +58,11 @@ public sealed record SekoAutonomyState
 
     public int ModificationGeneration { get; init; }
 
+    public string? LatestModificationPath { get; init; }
+
+    public bool LatestModificationRequiresBuild { get; init; } =
+        true;
+
     public int VerifiedModificationGeneration { get; init; } =
         -1;
 

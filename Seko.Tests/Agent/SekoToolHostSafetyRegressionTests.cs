@@ -271,6 +271,7 @@ public sealed class SekoToolHostSafetyRegressionTests
                 "find_text",
                 "list_files",
                 "read_file",
+                "verify_file",
                 "read_task_log",
                 "write_file",
                 "replace_text",

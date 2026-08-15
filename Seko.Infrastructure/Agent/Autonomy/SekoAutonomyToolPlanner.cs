@@ -47,6 +47,7 @@ public static class SekoAutonomyToolPlanner
                 "find_text",
                 "list_files",
                 "read_file",
+                "verify_file",
                 "build_project",
                 "git_status",
                 "git_diff"
@@ -121,7 +122,7 @@ public static class SekoAutonomyToolPlanner
                 new SekoAutonomyToolPlan(
                     phase,
                     VerificationTools,
-                    "Verification may inspect and build but cannot modify workspace files."),
+                    "Verification may inspect, run deterministic non-build artifact verification, and build, but cannot modify workspace files."),
 
             SekoAutonomyPhase.Repair =>
                 new SekoAutonomyToolPlan(
