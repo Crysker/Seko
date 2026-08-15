@@ -143,7 +143,8 @@ public sealed class SekoAttachmentRegressionTests
                 new[]
                 {
                     attachment
-                });
+                },
+                "What animal is in this picture?");
 
         Assert.Equal(
             1,
@@ -177,6 +178,25 @@ public sealed class SekoAttachmentRegressionTests
                 imageBytes),
             images[0]!
                 .GetValue<string>());
+
+        var visionPrompt =
+            messages[0]!["content"]!
+                .GetValue<string>();
+
+        Assert.Contains(
+            "What animal is in this picture?",
+            visionPrompt,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "people, animals, plants",
+            visionPrompt,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "main visible subject",
+            visionPrompt,
+            StringComparison.Ordinal);
 
         Assert.Contains(
             "Visible local screenshot evidence.",
@@ -291,6 +311,33 @@ public sealed class SekoAttachmentRegressionTests
         Assert.Equal(
             "preview.png",
             attachment.DisplayName);
+    }
+
+    [Fact]
+    public void FastConversationPrompt_TruthfullyAdvertisesLocalImageSupport()
+    {
+        var messages =
+            SekoFastConversation.BuildMessages(
+                new[]
+                {
+                    new ChatMessage
+                    {
+                        Role =
+                            MessageRole.User,
+
+                        Content =
+                            "Can you view images?"
+                    }
+                });
+
+        var systemPrompt =
+            messages[0]!["content"]!
+                .GetValue<string>();
+
+        Assert.Contains(
+            "accept local image attachments and screenshots",
+            systemPrompt,
+            StringComparison.Ordinal);
     }
 
     [Fact]

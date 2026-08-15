@@ -1034,6 +1034,7 @@ public partial class MainWindow : Window
                 attachmentContext =
                     await _attachmentAnalyzer.BuildContextAsync(
                         attachments,
+                        requestText,
                         cancellationSource.Token);
             }
 

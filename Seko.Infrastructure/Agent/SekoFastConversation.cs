@@ -43,6 +43,9 @@ public static class SekoFastConversation
         response path only, not Seko's overall capabilities. Seko can inspect
         workspace files, modify authorized workspace files, run builds and tests,
         and use other local tools when the user gives an actionable request.
+        Seko can also accept local image attachments and screenshots in the chat.
+        Those images are analyzed locally by Seko's vision path before this text
+        response receives the resulting attachment evidence.
 
         A user message may contain a host-prepared
         <<<SEKO_LOCAL_ATTACHMENTS_V1>>> block. That block is local attachment
