@@ -159,7 +159,33 @@ public partial class MainWindow : Window
         await SendCurrentMessageAsync();
     }
 
-    private void AttachFileButton_Click(
+    private void AttachmentMenuButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return;
+        }
+
+        if (AttachmentMenuButton.ContextMenu
+            is not ContextMenu menu)
+        {
+            return;
+        }
+
+        menu.PlacementTarget =
+            AttachmentMenuButton;
+
+        menu.Placement =
+            System.Windows.Controls.Primitives.PlacementMode.Top;
+
+        menu.IsOpen =
+            true;
+    }
+
+    private void AttachFileMenuItem_Click(
         object sender,
         RoutedEventArgs e)
     {
@@ -215,7 +241,7 @@ public partial class MainWindow : Window
         MessageInput.Focus();
     }
 
-    private async void CaptureScreenButton_Click(
+    private async void CaptureScreenMenuItem_Click(
         object sender,
         RoutedEventArgs e)
     {
@@ -275,6 +301,69 @@ public partial class MainWindow : Window
 
             ShowAttachmentNotice(
                 "Seko could not capture the primary screen.\n\n"
+                + exception.Message);
+        }
+    }
+
+    private void MessageInput_Pasting(
+        object sender,
+        DataObjectPastingEventArgs e)
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return;
+        }
+
+        var hasImage =
+            false;
+
+        try
+        {
+            hasImage =
+                e.DataObject.GetDataPresent(
+                    DataFormats.Bitmap)
+                || Clipboard.ContainsImage();
+        }
+        catch
+        {
+            // If Windows has the clipboard temporarily locked, preserve normal
+            // text-paste behavior instead of swallowing Ctrl+V.
+            return;
+        }
+
+        if (!hasImage)
+        {
+            return;
+        }
+
+        e.CancelCommand();
+
+        if (_pendingAttachments.Count
+            >= SekoAttachmentAnalyzer.MaximumAttachments)
+        {
+            ShowAttachmentNotice(
+                $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
+
+            return;
+        }
+
+        try
+        {
+            var path =
+                SekoScreenCaptureService.SaveClipboardImage();
+
+            TryAddAttachment(
+                path);
+
+            RefreshAttachmentTray();
+
+            MessageInput.Focus();
+        }
+        catch (Exception exception)
+        {
+            ShowAttachmentNotice(
+                "Seko could not paste the image from the Windows clipboard.\n\n"
                 + exception.Message);
         }
     }
@@ -906,10 +995,7 @@ public partial class MainWindow : Window
         MessageInput.IsEnabled =
             false;
 
-        AttachFileButton.IsEnabled =
-            false;
-
-        CaptureScreenButton.IsEnabled =
+        AttachmentMenuButton.IsEnabled =
             false;
 
         AttachmentList.IsEnabled =
@@ -1051,10 +1137,7 @@ public partial class MainWindow : Window
                 MessageInput.IsEnabled =
                     true;
 
-                AttachFileButton.IsEnabled =
-                    true;
-
-                CaptureScreenButton.IsEnabled =
+                AttachmentMenuButton.IsEnabled =
                     true;
 
                 AttachmentList.IsEnabled =

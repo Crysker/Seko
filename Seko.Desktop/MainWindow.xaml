@@ -890,33 +890,50 @@
 
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
-                                        <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
-                                    <Button x:Name="AttachFileButton"
+                                    <Button x:Name="AttachmentMenuButton"
                                             Grid.Column="0"
-                                            Content="Attach"
-                                            Style="{StaticResource BaseButton}"
-                                            Padding="10,7"
-                                            Margin="0,0,7,0"
-                                            HorizontalContentAlignment="Center"
-                                            VerticalAlignment="Bottom"
-                                            Click="AttachFileButton_Click"/>
-
-                                    <Button x:Name="CaptureScreenButton"
-                                            Grid.Column="1"
-                                            Content="Screen"
-                                            Style="{StaticResource BaseButton}"
-                                            Padding="10,7"
+                                            Width="38"
+                                            Height="38"
                                             Margin="0,0,10,0"
-                                            HorizontalContentAlignment="Center"
                                             VerticalAlignment="Bottom"
-                                            Click="CaptureScreenButton_Click"/>
+                                            HorizontalContentAlignment="Center"
+                                            VerticalContentAlignment="Center"
+                                            Style="{StaticResource BaseButton}"
+                                            Padding="0"
+                                            ToolTip="Add photos &amp; files"
+                                            Click="AttachmentMenuButton_Click">
+
+                                        <TextBlock Text="+"
+                                                   FontSize="22"
+                                                   FontWeight="Light"
+                                                   Foreground="{StaticResource TextPrimaryBrush}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center"/>
+
+                                        <Button.ContextMenu>
+
+                                            <ContextMenu Style="{StaticResource SekoContextMenu}">
+
+                                                <MenuItem Header="Add photos &amp; files"
+                                                          Style="{StaticResource SekoMenuItem}"
+                                                          Click="AttachFileMenuItem_Click"/>
+
+                                                <MenuItem Header="Take screenshot"
+                                                          Style="{StaticResource SekoMenuItem}"
+                                                          Click="CaptureScreenMenuItem_Click"/>
+
+                                            </ContextMenu>
+
+                                        </Button.ContextMenu>
+
+                                    </Button>
 
                                     <TextBox x:Name="MessageInput"
-                                             Grid.Column="2"
+                                             Grid.Column="1"
                                              Background="Transparent"
                                              BorderThickness="0"
                                              Foreground="{StaticResource TextPrimaryBrush}"
@@ -931,9 +948,10 @@
                                              MinHeight="30"
                                              VerticalScrollBarVisibility="Auto"
                                              VerticalContentAlignment="Center"
+                                             DataObject.Pasting="MessageInput_Pasting"
                                              PreviewKeyDown="MessageInput_PreviewKeyDown"/>
 
-                                    <Button Grid.Column="3"
+                                    <Button Grid.Column="2"
                                             Width="38"
                                             Height="38"
                                             Margin="12,0,0,0"

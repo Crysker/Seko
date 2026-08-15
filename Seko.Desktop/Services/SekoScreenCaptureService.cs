@@ -191,6 +191,57 @@ public static class SekoScreenCaptureService
         }
     }
 
+    public static string SaveClipboardImage()
+    {
+        if (!Clipboard.ContainsImage())
+        {
+            throw new InvalidOperationException(
+                "The Windows clipboard does not contain an image.");
+        }
+
+        var bitmapSource =
+            Clipboard.GetImage();
+
+        if (bitmapSource is null)
+        {
+            throw new InvalidOperationException(
+                "Windows reported an image on the clipboard, but Seko could not read it.");
+        }
+
+        bitmapSource.Freeze();
+
+        var directory =
+            GetCaptureDirectory();
+
+        Directory.CreateDirectory(
+            directory);
+
+        CleanupOldCaptures(
+            directory);
+
+        var filePath =
+            Path.Combine(
+                directory,
+                $"screenshot-paste-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
+
+        var encoder =
+            new PngBitmapEncoder();
+
+        encoder.Frames.Add(
+            BitmapFrame.Create(
+                bitmapSource));
+
+        using var stream =
+            File.Create(
+                filePath);
+
+        encoder.Save(
+            stream);
+
+        return
+            filePath;
+    }
+
     public static void TryDeleteOwnedCapture(
         string filePath)
     {
