@@ -29,6 +29,36 @@ public sealed class AutonomyLiveLoopRegressionTests
     }
 
     [Fact]
+    public void CreateController_RejectsExecutionSuppressedIntent()
+    {
+        var intent =
+            new TaskIntent(
+                RequiresWorkspaceTools:
+                    false,
+                RequiresModification:
+                    false,
+                ExplicitBuildRequested:
+                    false)
+            {
+                ExecutionSuppressed =
+                    true
+            };
+
+        var exception =
+            Assert.Throws<InvalidOperationException>(
+                () =>
+                    SekoAutonomyLiveLoop.CreateController(
+                        intent,
+                        requiresWebResearch:
+                            false));
+
+        Assert.True(
+            exception.Message.Contains(
+                "execution-suppressed",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void ResearchSuccess_AdvancesToInspection()
     {
         var controller =

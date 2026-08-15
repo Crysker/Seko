@@ -10,6 +10,12 @@ public static class SekoAutonomyLiveLoop
         ArgumentNullException.ThrowIfNull(
             taskIntent);
 
+        if (taskIntent.ExecutionSuppressed)
+        {
+            throw new InvalidOperationException(
+                "An execution-suppressed request cannot enter the autonomy tool loop.");
+        }
+
         return new SekoAutonomyController(
             new SekoAutonomyTaskRequirements(
                 RequiresResearch:

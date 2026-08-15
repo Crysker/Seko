@@ -51,7 +51,16 @@ public sealed class SekoSelfUpdatingAgent :
         string? beforeHead =
             null;
 
-        if (SekoSelfUpdateCoordinator.IsSekoRepository(
+        /*
+            Self-update tracking is itself a Git workflow. It must not run for
+            conversational, read-only, or explicitly non-action requests.
+
+            Only an original request that actually grants workspace-modification
+            permission may open the self-update finalization path.
+        */
+        if (ShouldTrackSelfUpdate(
+                conversation)
+            && SekoSelfUpdateCoordinator.IsSekoRepository(
                 _workspace))
         {
             beforeHead =
@@ -149,6 +158,28 @@ public sealed class SekoSelfUpdatingAgent :
             finalResponse.Content);
 
         return finalResponse;
+    }
+
+    public static bool ShouldTrackSelfUpdate(
+        IReadOnlyList<ChatMessage> conversation)
+    {
+        ArgumentNullException.ThrowIfNull(
+            conversation);
+
+        var request =
+            conversation
+                .LastOrDefault(
+                    message =>
+                        message.Role == MessageRole.User)
+                ?.Content
+            ?? string.Empty;
+
+        var routingDecision =
+            SekoRequestRouter.Route(
+                request);
+
+        return
+            routingDecision.TaskIntent.RequiresModification;
     }
 
     private void InnerAgent_ActivityChanged(

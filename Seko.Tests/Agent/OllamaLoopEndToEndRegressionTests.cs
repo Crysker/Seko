@@ -625,6 +625,44 @@ public sealed class OllamaLoopEndToEndRegressionTests
             Array.Empty<string>());
     }
 
+    [Fact]
+    public async Task ExplicitNonActionSelfDevelopmentQuestion_UsesDeterministicNoToolCapabilityReply()
+    {
+        var transport =
+            new ScriptedOllamaChatTransport();
+
+        var toolHost =
+            new ScriptedToolHost();
+
+        var agent =
+            CreateAgent(
+                toolHost,
+                transport);
+
+        var response =
+            await agent.SendAsync(
+                UserConversation(
+                    "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it."));
+
+        Assert.Equal(
+            "For an authorized active workspace, I can inspect files, modify authorized workspace files, and run builds or tests when appropriate and explicitly requested. Since you are only asking about capability here, I will not inspect or change anything now.",
+            response.Content);
+
+        Assert.Equal(
+            0,
+            toolHost.BeginTaskCallCount);
+
+        Assert.Equal(
+            0,
+            toolHost.AutoCommitCallCount);
+
+        Assert.Empty(
+            toolHost.ExecutedCalls);
+
+        Assert.Empty(
+            transport.Requests);
+    }
+
     private static OllamaAgent CreateAgent(
         ScriptedToolHost toolHost,
         ScriptedOllamaChatTransport transport)

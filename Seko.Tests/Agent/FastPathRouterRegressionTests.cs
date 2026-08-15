@@ -103,6 +103,152 @@ public sealed class FastPathRouterRegressionTests
             decision.TaskIntent.RequiresModification);
     }
 
+    [Theory]
+    [InlineData(
+        "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it.")]
+    [InlineData(
+        "Can you modify your own source? Just a question.")]
+    [InlineData(
+        "Could you add a feature to Seko? Don't actually do it.")]
+    [InlineData(
+        "Are you able to refactor this repo? No action needed.")]
+    [InlineData(
+        "Take your time: can you improve your own code? Just a question.")]
+    public void Router_ExplicitNonActionCapabilityQuestionSuppressesExecution(
+        string request)
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                request);
+
+        Assert.True(
+            decision.UseFastConversation);
+
+        Assert.True(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.True(
+            decision.TaskIntent.IsWorkspaceCapabilityQuestion);
+
+        Assert.False(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.False(
+            decision.TaskIntent.RequiresModification);
+
+        Assert.False(
+            decision.RequiresWebResearch);
+    }
+
+    [Fact]
+    public void Router_NonWorkspaceCapabilityQuestionDoesNotClaimWorkspaceCapabilityIntent()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Can you tell jokes? Just a question.");
+
+        Assert.True(
+            decision.UseFastConversation);
+
+        Assert.True(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.False(
+            decision.TaskIntent.IsWorkspaceCapabilityQuestion);
+
+        Assert.False(
+            decision.TaskIntent.RequiresWorkspaceTools);
+    }
+
+    [Fact]
+    public void Router_CapabilityQuestionWithoutSuppressionRemainsActionable()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Can you fix the Stop button in Seko and build the solution?");
+
+        Assert.False(
+            decision.UseFastConversation);
+
+        Assert.False(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.True(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.True(
+            decision.TaskIntent.RequiresModification);
+    }
+
+    [Fact]
+    public void Router_ReadOnlyInspectionRequestIsNotOverSuppressed()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Read your own code and tell me what could be improved. Do not change any files.");
+
+        Assert.False(
+            decision.UseFastConversation);
+
+        Assert.False(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.True(
+            decision.TaskIntent.RequiresWorkspaceTools);
+
+        Assert.False(
+            decision.TaskIntent.RequiresModification);
+    }
+
+    [Theory]
+    [InlineData(
+        "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it.")]
+    [InlineData(
+        "Read your own code and tell me what could be improved. Do not change any files.")]
+    [InlineData(
+        "Tell me a joke.")]
+    public void SelfUpdateTracking_NonModificationRequestsDoNotOpenFinalizePath(
+        string request)
+    {
+        var conversation =
+            new[]
+            {
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        request
+                }
+            };
+
+        Assert.False(
+            SekoSelfUpdatingAgent.ShouldTrackSelfUpdate(
+                conversation));
+    }
+
+    [Fact]
+    public void SelfUpdateTracking_ExplicitModificationRequestOpensFinalizePath()
+    {
+        var conversation =
+            new[]
+            {
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        "Fix the Stop button in Seko and build the solution."
+                }
+            };
+
+        Assert.True(
+            SekoSelfUpdatingAgent.ShouldTrackSelfUpdate(
+                conversation));
+    }
+
     [Fact]
     public void Router_ExplicitDeepAnalysisKeepsAgentPath()
     {
@@ -143,6 +289,25 @@ public sealed class FastPathRouterRegressionTests
 
         Assert.Contains(
             "This fast conversation path has no tools.",
+            systemPrompt);
+    }
+
+    [Fact]
+    public void FastConversationPromptPreservesOverallSekoCapabilities()
+    {
+        var systemPrompt =
+            GetNormalizedFastConversationSystemPrompt();
+
+        Assert.Contains(
+            "That describes this response path only, not Seko's overall capabilities.",
+            systemPrompt);
+
+        Assert.Contains(
+            "Seko can inspect workspace files, modify authorized workspace files, run builds and tests, and use other local tools when the user gives an actionable request.",
+            systemPrompt);
+
+        Assert.Contains(
+            "Never claim that Seko is globally unable to execute or modify code merely because this particular response is tool-free.",
             systemPrompt);
     }
 
