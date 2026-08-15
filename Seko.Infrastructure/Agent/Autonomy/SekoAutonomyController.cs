@@ -318,6 +318,22 @@ public sealed class SekoAutonomyController
                     outcome);
             }
 
+            if (signal
+                == SekoAutonomySignal.ModificationCompleted)
+            {
+                return CompleteModification(
+                    state,
+                    outcome);
+            }
+
+            if (signal
+                == SekoAutonomySignal.RepairCompleted)
+            {
+                return CompleteRepair(
+                    state,
+                    outcome);
+            }
+
             return ApplySignal(
                 state,
                 signal,
@@ -579,7 +595,8 @@ public sealed class SekoAutonomyController
     }
 
     private SekoAutonomyDecision CompleteModification(
-        SekoAutonomyState state)
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome? outcome = null)
     {
         EnsurePhase(
             state,
@@ -594,18 +611,30 @@ public sealed class SekoAutonomyController
                 "Workspace modification was reported without original task permission.");
         }
 
+        var verificationRequirement =
+            GetModificationVerificationRequirement(
+                outcome);
+
         var updated =
             state with
             {
                 ModificationGeneration =
-                    state.ModificationGeneration + 1
+                    state.ModificationGeneration + 1,
+
+                LatestModificationPath =
+                    verificationRequirement.Path,
+
+                LatestModificationRequiresBuild =
+                    verificationRequirement.RequiresBuild
             };
 
         return Continue(
             Transition(
                 updated,
                 SekoAutonomyPhase.Verification),
-            "Modification recorded; verification is mandatory before completion.");
+            verificationRequirement.RequiresBuild
+                ? "Build-relevant modification recorded; a successful build after this modification is mandatory before completion."
+                : "Non-build artifact modification recorded; deterministic post-edit file verification is mandatory before completion.");
     }
 
     private SekoAutonomyDecision CompleteVerification(
@@ -698,7 +727,8 @@ public sealed class SekoAutonomyController
     }
 
     private SekoAutonomyDecision CompleteRepair(
-        SekoAutonomyState state)
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome? outcome = null)
     {
         EnsurePhase(
             state,
@@ -713,18 +743,30 @@ public sealed class SekoAutonomyController
                 "Repair cannot modify the workspace because the original task did not grant modification permission.");
         }
 
+        var verificationRequirement =
+            GetModificationVerificationRequirement(
+                outcome);
+
         var updated =
             state with
             {
                 ModificationGeneration =
-                    state.ModificationGeneration + 1
+                    state.ModificationGeneration + 1,
+
+                LatestModificationPath =
+                    verificationRequirement.Path,
+
+                LatestModificationRequiresBuild =
+                    verificationRequirement.RequiresBuild
             };
 
         return Continue(
             Transition(
                 updated,
                 SekoAutonomyPhase.Verification),
-            "Repair modification recorded; returning directly to verification.");
+            verificationRequirement.RequiresBuild
+                ? "Repair changed build-relevant source; returning directly to build verification."
+                : "Repair changed a non-build artifact; returning directly to deterministic file verification.");
     }
 
     private SekoAutonomyDecision CompleteSynthesis(
@@ -1493,6 +1535,43 @@ public sealed class SekoAutonomyController
             or ".vue"
             or ".svelte";
     }
+
+    private static SekoModificationVerificationRequirement
+        GetModificationVerificationRequirement(
+            SekoAutonomyToolOutcome? outcome)
+    {
+        var path =
+            GetStringArgument(
+                outcome?.ArgumentsJson,
+                "path");
+
+        if (string.IsNullOrWhiteSpace(
+                path))
+        {
+            /*
+                Direct controller signals are used by unit tests and by any
+                future host integration that does not provide tool arguments.
+                Fail closed to build verification rather than accidentally
+                accepting a weaker artifact verifier.
+            */
+            return new SekoModificationVerificationRequirement(
+                null,
+                true);
+        }
+
+        var normalizedPath =
+            NormalizeEvidencePath(
+                path);
+
+        return new SekoModificationVerificationRequirement(
+            normalizedPath,
+            SekoVerificationPolicy.RequiresBuild(
+                normalizedPath));
+    }
+
+    private sealed record SekoModificationVerificationRequirement(
+        string? Path,
+        bool RequiresBuild);
 
     private sealed record SekoProjectInventory(
         IReadOnlyList<string> Files,

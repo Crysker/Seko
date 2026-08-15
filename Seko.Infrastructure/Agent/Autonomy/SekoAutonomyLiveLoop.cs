@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Seko.Infrastructure.Agent;
 
 public static class SekoAutonomyLiveLoop
@@ -56,9 +58,10 @@ public static class SekoAutonomyLiveLoop
         {
             if (state.Phase
                     == SekoAutonomyPhase.Verification
-                && toolName.Equals(
-                    "build_project",
-                    StringComparison.Ordinal))
+                && IsVerificationToolForState(
+                    state,
+                    toolName,
+                    argumentsJson))
             {
                 return SekoAutonomyToolOutcome.Failure(
                     toolName,
@@ -93,6 +96,21 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.NoChange(
                 toolName,
                 result,
+                argumentsJson);
+        }
+
+        if (state.Phase
+                == SekoAutonomyPhase.Verification
+            && IsVerificationToolName(
+                toolName)
+            && !IsVerificationToolForState(
+                state,
+                toolName,
+                argumentsJson))
+        {
+            return SekoAutonomyToolOutcome.NoChange(
+                toolName,
+                "This verifier does not match the latest modification type and cannot satisfy the current verification generation.",
                 argumentsJson);
         }
 
@@ -134,9 +152,10 @@ public static class SekoAutonomyLiveLoop
 
         if (state.Phase
                 == SekoAutonomyPhase.Verification
-            && toolName.Equals(
-                "build_project",
-                StringComparison.Ordinal))
+            && IsVerificationToolForState(
+                state,
+                toolName,
+                argumentsJson))
         {
             return SekoAutonomyToolOutcome.Success(
                 toolName,
@@ -241,6 +260,109 @@ public static class SekoAutonomyLiveLoop
         }
 
         return null;
+    }
+
+    private static bool IsVerificationToolName(
+        string toolName)
+    {
+        return toolName is
+            "build_project"
+            or "verify_file";
+    }
+
+    private static bool IsVerificationToolForState(
+        SekoAutonomyState state,
+        string toolName,
+        string? argumentsJson)
+    {
+        if (toolName.Equals(
+                "build_project",
+                StringComparison.Ordinal))
+        {
+            return
+                state.ModificationGeneration == 0
+                || state.LatestModificationRequiresBuild;
+        }
+
+        if (toolName.Equals(
+                "verify_file",
+                StringComparison.Ordinal))
+        {
+            if (state.ModificationGeneration <= 0
+                || state.LatestModificationRequiresBuild
+                || string.IsNullOrWhiteSpace(
+                    state.LatestModificationPath))
+            {
+                return false;
+            }
+
+            var requestedPath =
+                GetVerificationPathArgument(
+                    argumentsJson);
+
+            return
+                string.Equals(
+                    NormalizeVerificationPath(
+                        requestedPath),
+                    NormalizeVerificationPath(
+                        state.LatestModificationPath),
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
+    }
+
+    private static string? GetVerificationPathArgument(
+        string? argumentsJson)
+    {
+        if (string.IsNullOrWhiteSpace(
+                argumentsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    argumentsJson);
+
+            if (!document.RootElement.TryGetProperty(
+                    "path",
+                    out var pathElement)
+                || pathElement.ValueKind
+                    != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return pathElement.GetString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizeVerificationPath(
+        string? path)
+    {
+        var normalized =
+            (path ?? string.Empty)
+                .Trim()
+                .Replace(
+                    '\\',
+                    '/');
+
+        while (normalized.StartsWith(
+                   "./",
+                   StringComparison.Ordinal))
+        {
+            normalized =
+                normalized[2..];
+        }
+
+        return normalized;
     }
 
     private static bool IsResearchTool(

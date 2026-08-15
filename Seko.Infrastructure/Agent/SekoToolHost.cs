@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -92,6 +93,12 @@ public sealed class SekoToolHost :
     private readonly HashSet<string> _changedFiles =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly Dictionary<string, ArtifactVerificationExpectation>
+        _artifactVerificationExpectations =
+            new(StringComparer.OrdinalIgnoreCase);
+
+    private int _artifactModificationGeneration;
+
     private bool _isGitRepository;
     private bool _baselineClean = true;
 
@@ -152,6 +159,11 @@ public sealed class SekoToolHost :
         CancellationToken cancellationToken = default)
     {
         _changedFiles.Clear();
+
+        _artifactVerificationExpectations.Clear();
+
+        _artifactModificationGeneration =
+            0;
 
         _buildWasRun =
             false;
@@ -380,6 +392,42 @@ public sealed class SekoToolHost :
                                     ["maximum"] =
                                         250
                                 }
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "path"
+                        }
+                }),
+
+            CreateFunctionTool(
+                "verify_file",
+                """
+                Deterministically verify the latest successful non-build modification
+                to one file.
+
+                The file must have been modified by write_file or replace_text during
+                the current task. The host re-reads the file, verifies that the exact
+                post-edit content persisted, and parses JSON/XML structure when
+                applicable.
+
+                Use this in the Verification phase for JSON, JSONC, XML, .config,
+                Markdown, text, YAML, TOML, INI, HTML, CSS, JavaScript, TypeScript and
+                other non-build artifacts. Build-relevant .NET files must use
+                build_project instead.
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["path"] =
+                                StringProperty(
+                                    "File path relative to the workspace root. It must be the latest non-build file modified by this task.")
                         },
 
                     ["required"] =
@@ -758,6 +806,7 @@ public sealed class SekoToolHost :
                         ListFiles(
                             arguments)),
                 ReadFileAsync,
+                VerifyFileAsync,
                 ReadTaskLogAsync,
                 WriteFileAsync,
                 ReplaceTextAsync),
@@ -874,6 +923,28 @@ public sealed class SekoToolHost :
         {
             return
                 "Git: changes were not committed because a successful build after the final build-relevant modification has not been verified.";
+        }
+
+        var unverifiedArtifact =
+            _changedFiles
+                .Where(
+                    path => !RequiresBuild(
+                        path))
+                .Where(
+                    path => !IsArtifactVerified(
+                        path))
+                .OrderBy(
+                    path => path,
+                    StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(
+                unverifiedArtifact))
+        {
+            return
+                "Git: changes were not committed because deterministic non-build artifact verification after the final modification is missing for "
+                + unverifiedArtifact
+                + ".";
         }
 
         var filesToStage =
@@ -1701,6 +1772,125 @@ public sealed class SekoToolHost :
                 10_000);
     }
 
+    private async Task<string> VerifyFileAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var relativePath =
+            GetString(
+                arguments,
+                "path");
+
+        var fullPath =
+            _pathGuard.ResolveSafePath(
+                relativePath);
+
+        _pathGuard.EnsureAllowedFile(
+            fullPath);
+
+        var normalizedPath =
+            NormalizeRelativePath(
+                Path.GetRelativePath(
+                    _workspaceRoot,
+                    fullPath));
+
+        if (RequiresBuild(
+                normalizedPath))
+        {
+            return
+                "ERROR: VERIFICATION_REQUIRES_BUILD. "
+                + normalizedPath
+                + " is build-relevant and must be verified with build_project after the final modification.";
+        }
+
+        if (!_artifactVerificationExpectations.TryGetValue(
+                normalizedPath,
+                out var expectation))
+        {
+            return
+                "ERROR: VERIFICATION_FAILED. "
+                + normalizedPath
+                + " was not successfully modified by this task. Pre-edit reads or unrelated file state cannot verify the current modification generation.";
+        }
+
+        if (!File.Exists(
+                fullPath))
+        {
+            return
+                "ERROR: VERIFICATION_FAILED. "
+                + normalizedPath
+                + " no longer exists after the recorded modification.";
+        }
+
+        var fileInfo =
+            new FileInfo(
+                fullPath);
+
+        if (fileInfo.Length > 2_000_000)
+        {
+            return
+                "ERROR: VERIFICATION_FAILED. "
+                + normalizedPath
+                + " is too large for deterministic artifact verification.";
+        }
+
+        var currentContent =
+            await File.ReadAllTextAsync(
+                fullPath,
+                cancellationToken);
+
+        var currentHash =
+            ComputeContentHash(
+                currentContent);
+
+        if (!string.Equals(
+                currentHash,
+                expectation.ContentHash,
+                StringComparison.Ordinal))
+        {
+            return
+                "ERROR: VERIFICATION_FAILED. "
+                + normalizedPath
+                + " differs from the exact post-edit content recorded for the latest successful modification.";
+        }
+
+        var structureError =
+            SekoVerificationPolicy.ValidateStructure(
+                normalizedPath,
+                currentContent);
+
+        if (!string.IsNullOrWhiteSpace(
+                structureError))
+        {
+            return
+                "ERROR: VERIFICATION_FAILED. "
+                + normalizedPath
+                + " structure validation failed. "
+                + structureError;
+        }
+
+        _artifactVerificationExpectations[normalizedPath] =
+            expectation with
+            {
+                VerifiedGeneration =
+                    expectation.ModificationGeneration
+            };
+
+        var structureKind =
+            SekoVerificationPolicy.GetStructureKind(
+                normalizedPath,
+                currentContent);
+
+        return
+            "VERIFICATION PASSED: "
+            + normalizedPath
+            + "; modification_generation="
+            + expectation.ModificationGeneration
+            + "; persistence=exact; structure="
+            + structureKind
+            + ".";
+    }
+
     private static async Task<string> ReadTaskLogAsync(
         JsonElement arguments,
         CancellationToken cancellationToken)
@@ -1928,7 +2118,8 @@ public sealed class SekoToolHost :
                     fullPath));
 
         RegisterChangedFile(
-            normalizedPath);
+            normalizedPath,
+            content);
 
         return
             $"Wrote {normalizedPath}.";
@@ -2037,7 +2228,8 @@ public sealed class SekoToolHost :
                     fullPath));
 
         RegisterChangedFile(
-            normalizedPath);
+            normalizedPath,
+            updatedContent);
 
         return
             $"Updated {normalizedPath}.";
@@ -2130,16 +2322,50 @@ public sealed class SekoToolHost :
     }
 
     private void RegisterChangedFile(
-        string normalizedPath)
+        string normalizedPath,
+        string expectedContent)
     {
         _changedFiles.Add(
             normalizedPath);
+
+        _artifactModificationGeneration++;
+
+        _artifactVerificationExpectations[normalizedPath] =
+            new ArtifactVerificationExpectation(
+                ComputeContentHash(
+                    expectedContent),
+                _artifactModificationGeneration,
+                -1);
 
         if (RequiresBuild(
                 normalizedPath))
         {
             _buildRelevantModificationGeneration++;
         }
+    }
+
+    private bool IsArtifactVerified(
+        string normalizedPath)
+    {
+        return
+            _artifactVerificationExpectations.TryGetValue(
+                normalizedPath,
+                out var expectation)
+            && expectation.VerifiedGeneration
+                == expectation.ModificationGeneration;
+    }
+
+    private static string ComputeContentHash(
+        string content)
+    {
+        var bytes =
+            Encoding.UTF8.GetBytes(
+                content);
+
+        return
+            Convert.ToHexString(
+                SHA256.HashData(
+                    bytes));
     }
 
     private void EnsureModificationAllowed()
@@ -2550,34 +2776,9 @@ public sealed class SekoToolHost :
     private static bool RequiresBuild(
         string relativePath)
     {
-        var extension =
-            Path.GetExtension(
-                relativePath);
-
         return
-            extension.Equals(
-                ".cs",
-                StringComparison.OrdinalIgnoreCase)
-
-            || extension.Equals(
-                ".xaml",
-                StringComparison.OrdinalIgnoreCase)
-
-            || extension.Equals(
-                ".csproj",
-                StringComparison.OrdinalIgnoreCase)
-
-            || extension.Equals(
-                ".sln",
-                StringComparison.OrdinalIgnoreCase)
-
-            || extension.Equals(
-                ".props",
-                StringComparison.OrdinalIgnoreCase)
-
-            || extension.Equals(
-                ".targets",
-                StringComparison.OrdinalIgnoreCase);
+            SekoVerificationPolicy.RequiresBuild(
+                relativePath);
     }
 
     private static async Task WritePreservingUtf8BomAsync(
@@ -2739,6 +2940,11 @@ public sealed class SekoToolHost :
             + Environment.NewLine
             + "[Output truncated]";
     }
+
+    private sealed record ArtifactVerificationExpectation(
+        string ContentHash,
+        int ModificationGeneration,
+        int VerifiedGeneration);
 
     private sealed record WorkspaceLineMatch(
         int LineIndex,
