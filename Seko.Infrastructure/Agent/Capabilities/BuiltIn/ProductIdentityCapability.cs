@@ -14,16 +14,18 @@ public sealed class ProductIdentityCapability :
         new(
             "product.identity",
             "Product Identity",
-            "Inspect and deterministically verify Seko's canonical product identity.",
+            "Inspect, update and deterministically verify Seko's canonical product identity.",
             new[]
             {
                 "product.identity.inspect",
+                "product.identity.update",
                 "product.identity.verify",
                 "project.test"
             },
             new[]
             {
                 "filesystem.read",
+                "filesystem.write",
                 "process.execute:dotnet"
             });
 
@@ -32,6 +34,7 @@ public sealed class ProductIdentityCapability :
 
     public ProductIdentityCapability(
         SekoToolHandler inspectProductIdentity,
+        SekoToolHandler updateProductIdentity,
         SekoToolHandler testProject,
         SekoToolHandler verifyProductIdentity)
     {
@@ -41,6 +44,10 @@ public sealed class ProductIdentityCapability :
                 new SekoToolRegistration(
                     "inspect_product_identity",
                     inspectProductIdentity),
+
+                new SekoToolRegistration(
+                    "update_product_identity",
+                    updateProductIdentity),
 
                 new SekoToolRegistration(
                     "test_project",

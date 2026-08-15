@@ -65,6 +65,94 @@ public sealed class SelfIdentityUpdateRegressionTests
             },
             inspection.ToolNames);
 
+        var action =
+            SekoAutonomyToolPlanner.Create(
+                new SekoAutonomyState
+                {
+                    Phase =
+                        SekoAutonomyPhase.Action,
+
+                    ProductIdentityUpdateRequired =
+                        true,
+
+                    WorkspaceModificationAllowed =
+                        true
+                });
+
+        Assert.Equal(
+            new[]
+            {
+                "update_product_identity"
+            },
+            action.ToolNames);
+
+        var controller =
+            new SekoAutonomyController(
+                new SekoAutonomyTaskRequirements(
+                    RequiresResearch:
+                        false,
+                    RequiresWorkspaceInspection:
+                        true,
+                    RequiresModification:
+                        true,
+                    RequiresVerification:
+                        true)
+                {
+                    RequiresProductIdentityUpdate =
+                        true,
+
+                    ExpectedCurrentProductVersion =
+                        "1.1.4",
+
+                    RequestedProductVersion =
+                        "1.2.0",
+
+                    RequestedProductDisplayName =
+                        "S.E.K.O"
+                });
+
+        var actionState =
+            new SekoAutonomyState
+            {
+                Phase =
+                    SekoAutonomyPhase.Action,
+
+                WorkspaceModificationAllowed =
+                    true,
+
+                ProductIdentityUpdateRequired =
+                    true,
+
+                ExpectedCurrentProductVersion =
+                    "1.1.4",
+
+                RequestedProductVersion =
+                    "1.2.0",
+
+                RequestedProductDisplayName =
+                    "S.E.K.O"
+            };
+
+        var modificationDecision =
+            controller.ApplyToolOutcome(
+                actionState,
+                SekoAutonomyToolOutcome.Success(
+                    "update_product_identity",
+                    SekoAutonomySignal.ModificationCompleted,
+                    "Updated Seko.Core/Product/SekoProductIdentity.cs: display_name=S.E.K.O; version=1.2.0.",
+                    "{}"));
+
+        Assert.Equal(
+            SekoAutonomyPhase.Verification,
+            modificationDecision.State.Phase);
+
+        Assert.Equal(
+            "Seko.Core/Product/SekoProductIdentity.cs",
+            modificationDecision.State.LatestModificationPath);
+
+        Assert.True(
+            modificationDecision.State.LatestModificationRequiresBuild);
+
         var verification =
             SekoAutonomyToolPlanner.Create(
                 new SekoAutonomyState
@@ -104,14 +192,8 @@ public sealed class SelfIdentityUpdateRegressionTests
                     }
                     """),
                 ToolResponse(
-                    "replace_text",
-                    """
-                    {
-                      "path": "Seko.Core/Product/SekoProductIdentity.cs",
-                      "old_text": "public const string DisplayName =\n        \"SEKO\";\n\n    public const string Version =\n        \"1.1.4\";",
-                      "new_text": "public const string DisplayName =\n        \"S.E.K.O\";\n\n    public const string Version =\n        \"1.2.0\";"
-                    }
-                    """),
+                    "update_product_identity",
+                    "{}"),
                 ToolResponse(
                     "build_project",
                     "{}"),
@@ -144,8 +226,8 @@ public sealed class SelfIdentityUpdateRegressionTests
             """);
 
         toolHost.QueueResult(
-            "replace_text",
-            "Updated Seko.Core/Product/SekoProductIdentity.cs.");
+            "update_product_identity",
+            "Updated Seko.Core/Product/SekoProductIdentity.cs: display_name=S.E.K.O; version=1.2.0.");
 
         toolHost.QueueResult(
             "build_project",
@@ -207,7 +289,7 @@ public sealed class SelfIdentityUpdateRegressionTests
             new[]
             {
                 "inspect_product_identity",
-                "replace_text",
+                "update_product_identity",
                 "build_project",
                 "test_project",
                 "verify_product_identity"
@@ -233,8 +315,11 @@ public sealed class SelfIdentityUpdateRegressionTests
             GetToolNames(
                 transport.Requests[0]));
 
-        Assert.Contains(
-            "replace_text",
+        Assert.Equal(
+            new[]
+            {
+                "update_product_identity"
+            },
             GetToolNames(
                 transport.Requests[1]));
 
@@ -306,6 +391,181 @@ public sealed class SelfIdentityUpdateRegressionTests
                     == true
                 && diagnostic.Success
                     == true);
+    }
+
+    [Fact]
+    public async Task HostOwnedIdentityUpdate_DoesNotRequireModelGeneratedOldText()
+    {
+        var root =
+            Path.Combine(
+                Path.GetTempPath(),
+                "SekoIdentityHostOwned-"
+                + Guid.NewGuid().ToString("N"));
+
+        try
+        {
+            Directory.CreateDirectory(
+                Path.Combine(
+                    root,
+                    "Seko.Core",
+                    "Product"));
+
+            Directory.CreateDirectory(
+                Path.Combine(
+                    root,
+                    "Seko.Desktop"));
+
+            Directory.CreateDirectory(
+                Path.Combine(
+                    root,
+                    "Seko.Infrastructure",
+                    "Agent"));
+
+            await File.WriteAllTextAsync(
+                Path.Combine(
+                    root,
+                    "Seko.Core",
+                    "Seko.Core.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>");
+
+            await File.WriteAllTextAsync(
+                Path.Combine(
+                    root,
+                    "Seko.Core",
+                    "Product",
+                    "SekoProductIdentity.cs"),
+                """
+                namespace Seko.Core.Product;
+
+                public static class SekoProductIdentity
+                {
+                    public const string DisplayName =
+                        "SEKO";
+
+                    public const string Version =
+                        "1.1.4";
+
+                    public const string DisplayVersion =
+                        "v" + Version;
+                }
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(
+                    root,
+                    "Seko.Desktop",
+                    "MainWindow.xaml"),
+                """
+                Title="{x:Static product:SekoProductIdentity.DisplayName}"
+                Text="{x:Static product:SekoProductIdentity.DisplayName}"
+                Text="{x:Static product:SekoProductIdentity.DisplayVersion}"
+                Value="{x:Static product:SekoProductIdentity.DisplayName}"
+                """);
+
+            await File.WriteAllTextAsync(
+                Path.Combine(
+                    root,
+                    "Seko.Infrastructure",
+                    "Agent",
+                    "OllamaAgent.cs"),
+                "SekoProductIdentity.DisplayName");
+
+            await File.WriteAllTextAsync(
+                Path.Combine(
+                    root,
+                    "Seko.Infrastructure",
+                    "Agent",
+                    "SekoFastConversation.cs"),
+                "SekoProductIdentity.DisplayName");
+
+            var host =
+                new SekoToolHost(
+                    new Workspace
+                    {
+                        Id =
+                            Guid.NewGuid(),
+
+                        Name =
+                            "Seko",
+
+                        RootPath =
+                            root
+                    });
+
+            await host.BeginTaskAsync();
+
+            var inspection =
+                await host.ExecuteAsync(
+                    "inspect_product_identity",
+                    """
+                    {
+                      "expected_current_version": "1.1.4",
+                      "requested_version": "1.2.0",
+                      "requested_name": "S.E.K.O"
+                    }
+                    """);
+
+            Assert.StartsWith(
+                "PRODUCT IDENTITY INSPECTION PASSED",
+                inspection,
+                StringComparison.Ordinal);
+
+            var update =
+                await host.ExecuteAsync(
+                    "update_product_identity",
+                    "{}");
+
+            Assert.StartsWith(
+                "Updated Seko.Core/Product/SekoProductIdentity.cs",
+                update,
+                StringComparison.Ordinal);
+
+            var identitySource =
+                await File.ReadAllTextAsync(
+                    Path.Combine(
+                        root,
+                        "Seko.Core",
+                        "Product",
+                        "SekoProductIdentity.cs"));
+
+            Assert.Contains(
+                "\"S.E.K.O\"",
+                identitySource,
+                StringComparison.Ordinal);
+
+            Assert.Contains(
+                "\"1.2.0\"",
+                identitySource,
+                StringComparison.Ordinal);
+
+            Assert.DoesNotContain(
+                "\"SEKO\"",
+                identitySource,
+                StringComparison.Ordinal);
+
+            Assert.DoesNotContain(
+                "\"1.1.4\"",
+                identitySource,
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(
+                        root))
+                {
+                    Directory.Delete(
+                        root,
+                        recursive:
+                            true);
+                }
+            }
+            catch
+            {
+                // Best-effort cleanup for the regression fixture.
+            }
+        }
     }
 
     private static string ToolResponse(

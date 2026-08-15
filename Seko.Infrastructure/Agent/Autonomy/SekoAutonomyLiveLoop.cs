@@ -605,6 +605,9 @@ public static class SekoAutonomyLiveLoop
                 StringComparison.Ordinal)
             || toolName.Equals(
                 "replace_text",
+                StringComparison.Ordinal)
+            || toolName.Equals(
+                "update_product_identity",
                 StringComparison.Ordinal);
     }
 

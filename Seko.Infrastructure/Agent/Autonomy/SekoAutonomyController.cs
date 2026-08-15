@@ -1660,6 +1660,21 @@ public sealed class SekoAutonomyController
         GetModificationVerificationRequirement(
             SekoAutonomyToolOutcome? outcome)
     {
+        if (outcome?.ToolName.Equals(
+                "update_product_identity",
+                StringComparison.Ordinal)
+            == true)
+        {
+            /*
+                update_product_identity is a host-owned zero-argument edit.
+                Its target is fixed by capability design, so preserve the
+                canonical path explicitly for the verification-generation gate.
+            */
+            return new SekoModificationVerificationRequirement(
+                "Seko.Core/Product/SekoProductIdentity.cs",
+                true);
+        }
+
         var path =
             GetStringArgument(
                 outcome?.ArgumentsJson,

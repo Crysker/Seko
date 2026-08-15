@@ -1172,10 +1172,11 @@ public sealed class OllamaAgent :
             - do not perform broad workspace searches
 
             In Action:
-            - edit only Seko.Core/Product/SekoProductIdentity.cs unless concrete
-              verification evidence proves the canonical wiring itself is broken
-            - change DisplayName and Version in ONE replace_text call so one
-              successful modification generation contains the complete identity update
+            - call update_product_identity exactly once
+            - it takes no arguments: use {}
+            - the host applies the exact baseline/target accepted during
+              inspect_product_identity, so do not use replace_text or reproduce
+              source whitespace yourself
             - do not rename namespaces, assemblies, projects, folders, repository
               names, classes, internal technical identifiers or historical logs
 
@@ -1684,7 +1685,14 @@ public sealed class OllamaAgent :
                 "The previous tests did not succeed. Use the test failure output to repair the current task before testing again.",
 
             "inspect_product_identity" =>
-                "The canonical identity evidence is already available. Use that exact source block for the single focused identity edit.",
+                "The canonical identity evidence is already available. Call update_product_identity once; do not reconstruct old_text.",
+
+            "update_product_identity" when IsSuccessfulModification(
+                previousResult) =>
+                "The host-owned identity update already succeeded. Continue to build_project, test_project and verify_product_identity.",
+
+            "update_product_identity" =>
+                "Use the concrete host error. Re-inspect product identity only if the accepted baseline changed; do not fall back to whitespace-sensitive generic replacement.",
 
             "verify_product_identity" =>
                 "Use the identity verification result as authoritative. If it failed, repair only the named canonical identity or wiring problem.",
@@ -2089,6 +2097,9 @@ public sealed class OllamaAgent :
                     path)
                     ? "Editing source..."
                     : $"Editing {path}...",
+
+            "update_product_identity" =>
+                "Updating canonical product identity...",
 
             "write_file" =>
                 string.IsNullOrWhiteSpace(

@@ -123,6 +123,8 @@ public sealed class SekoToolHost :
 
     private int _artifactModificationGeneration;
 
+    private PendingProductIdentityUpdate? _pendingProductIdentityUpdate;
+
     private bool _isGitRepository;
     private bool _baselineClean = true;
 
@@ -193,6 +195,9 @@ public sealed class SekoToolHost :
 
         _artifactModificationGeneration =
             0;
+
+        _pendingProductIdentityUpdate =
+            null;
 
         _buildWasRun =
             false;
@@ -485,6 +490,20 @@ public sealed class SekoToolHost :
                             "requested_name"
                         }
                 }),
+
+            CreateFunctionTool(
+                "update_product_identity",
+                """
+                Apply the exact product display-name/version update that was accepted by
+                the immediately preceding successful inspect_product_identity call.
+
+                This host-owned tool takes no model-generated old_text. It re-reads the
+                canonical identity file, confirms the inspected baseline is still current,
+                changes only DisplayName and Version, preserves surrounding formatting,
+                records one build-relevant modification generation, and refuses to run
+                without an accepted identity inspection.
+                """,
+                EmptyParameters()),
 
             CreateFunctionTool(
                 "verify_file",
@@ -956,6 +975,7 @@ public sealed class SekoToolHost :
         registry.Register(
             new ProductIdentityCapability(
                 InspectProductIdentityAsync,
+                UpdateProductIdentityAsync,
                 (_, cancellationToken) =>
                     TestProjectAsync(
                         cancellationToken),
@@ -2120,6 +2140,13 @@ public sealed class SekoToolHost :
                 + consumerError;
         }
 
+        _pendingProductIdentityUpdate =
+            new PendingProductIdentityUpdate(
+                snapshot.DisplayName!,
+                expectedCurrentVersion,
+                requestedName,
+                requestedVersion);
+
         return
             "PRODUCT IDENTITY INSPECTION PASSED\n"
             + $"CANONICAL PATH: {ProductIdentityRelativePath}\n"
@@ -2128,11 +2155,140 @@ public sealed class SekoToolHost :
             + $"REQUESTED DISPLAY NAME: {requestedName}\n"
             + $"REQUESTED VERSION: {requestedVersion}\n\n"
             + "REQUIRED ACTION:\n"
-            + "Use ONE replace_text call on the canonical path that changes both "
-            + "DisplayName and Version together. Do not rename namespaces, projects, "
-            + "folders, classes, repository names, internal technical identifiers or historical logs.\n\n"
-            + "CURRENT CANONICAL SOURCE:\n"
-            + snapshot.Source;
+            + "Call update_product_identity once. The host has stored the accepted "
+            + "baseline and requested target, so no old_text or file-content reproduction "
+            + "is required from the model. Do not rename namespaces, projects, folders, "
+            + "classes, repository names, internal technical identifiers or historical logs.";
+    }
+
+    private async Task<string> UpdateProductIdentityAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        EnsureModificationAllowed();
+
+        if (_pendingProductIdentityUpdate is null)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_UPDATE_NOT_READY. "
+                + "A successful inspect_product_identity call must establish the exact baseline and target before the identity can be modified.";
+        }
+
+        var pending =
+            _pendingProductIdentityUpdate;
+
+        var snapshot =
+            await ReadProductIdentitySnapshotAsync(
+                cancellationToken);
+
+        if (snapshot.Error is not null)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_UPDATE_FAILED. "
+                + snapshot.Error;
+        }
+
+        if (!string.Equals(
+                snapshot.DisplayName,
+                pending.ExpectedCurrentDisplayName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                snapshot.Version,
+                pending.ExpectedCurrentVersion,
+                StringComparison.Ordinal))
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_BASELINE_CHANGED. "
+                + $"Inspection accepted {pending.ExpectedCurrentDisplayName} {pending.ExpectedCurrentVersion}, "
+                + $"but the canonical source now contains {snapshot.DisplayName} {snapshot.Version}. "
+                + "Re-inspect instead of applying a stale identity update.";
+        }
+
+        var displayNameMatches =
+            ProductDisplayNameRegex.Matches(
+                snapshot.Source);
+
+        var versionMatches =
+            ProductVersionRegex.Matches(
+                snapshot.Source);
+
+        if (displayNameMatches.Count != 1
+            || versionMatches.Count != 1)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_UPDATE_FAILED. "
+                + "The canonical DisplayName/Version constants are not uniquely identifiable.";
+        }
+
+        var updatedContent =
+            ReplaceRegexValue(
+                ProductDisplayNameRegex,
+                snapshot.Source,
+                pending.RequestedDisplayName);
+
+        updatedContent =
+            ReplaceRegexValue(
+                ProductVersionRegex,
+                updatedContent,
+                pending.RequestedVersion);
+
+        if (string.Equals(
+                updatedContent,
+                snapshot.Source,
+                StringComparison.Ordinal))
+        {
+            return
+                $"No change needed in {ProductIdentityRelativePath}.";
+        }
+
+        var fullPath =
+            _pathGuard.ResolveSafePath(
+                ProductIdentityRelativePath);
+
+        _pathGuard.EnsureAllowedFile(
+            fullPath);
+
+        _pathGuard.EnsureSourceModificationBelongsToProject(
+            fullPath);
+
+        await WritePreservingUtf8BomAsync(
+            fullPath,
+            updatedContent,
+            cancellationToken);
+
+        RegisterChangedFile(
+            ProductIdentityRelativePath,
+            updatedContent);
+
+        return
+            $"Updated {ProductIdentityRelativePath}: "
+            + $"display_name={pending.RequestedDisplayName}; "
+            + $"version={pending.RequestedVersion}.";
+    }
+
+    private static string ReplaceRegexValue(
+        Regex regex,
+        string source,
+        string replacement)
+    {
+        return
+            regex.Replace(
+                source,
+                match =>
+                {
+                    var valueGroup =
+                        match.Groups["value"];
+
+                    var relativeIndex =
+                        valueGroup.Index
+                        - match.Index;
+
+                    return
+                        match.Value[..relativeIndex]
+                        + replacement
+                        + match.Value[(relativeIndex + valueGroup.Length)..];
+                },
+                1);
     }
 
     private async Task<string> TestProjectAsync(
@@ -3441,6 +3597,12 @@ public sealed class SekoToolHost :
         string ContentHash,
         int ModificationGeneration,
         int VerifiedGeneration);
+
+    private sealed record PendingProductIdentityUpdate(
+        string ExpectedCurrentDisplayName,
+        string ExpectedCurrentVersion,
+        string RequestedDisplayName,
+        string RequestedVersion);
 
     private sealed record ProductIdentitySnapshot(
         string? DisplayName,

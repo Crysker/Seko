@@ -21,9 +21,7 @@ public static class SekoAutonomyToolPlanner
         Array.AsReadOnly(
             new[]
             {
-                "read_file",
-                "replace_text",
-                "git_diff"
+                "update_product_identity"
             });
 
     private static readonly IReadOnlyCollection<string> ProductIdentityVerificationTools =
@@ -146,7 +144,7 @@ public static class SekoAutonomyToolPlanner
                 new SekoAutonomyToolPlan(
                     phase,
                     ProductIdentityActionTools,
-                    "Product identity action must make one focused canonical identity edit; do not rename namespaces, projects or historical data."),
+                    "Product identity action is host-owned: call update_product_identity once. The host applies the accepted inspection target without model-generated old_text."),
 
             SekoAutonomyPhase.Verification =>
                 new SekoAutonomyToolPlan(
