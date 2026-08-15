@@ -200,6 +200,55 @@ public sealed class FastPathRouterRegressionTests
             decision.TaskIntent.RequiresModification);
     }
 
+    [Theory]
+    [InlineData(
+        "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it.")]
+    [InlineData(
+        "Read your own code and tell me what could be improved. Do not change any files.")]
+    [InlineData(
+        "Tell me a joke.")]
+    public void SelfUpdateTracking_NonModificationRequestsDoNotOpenFinalizePath(
+        string request)
+    {
+        var conversation =
+            new[]
+            {
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        request
+                }
+            };
+
+        Assert.False(
+            SekoSelfUpdatingAgent.ShouldTrackSelfUpdate(
+                conversation));
+    }
+
+    [Fact]
+    public void SelfUpdateTracking_ExplicitModificationRequestOpensFinalizePath()
+    {
+        var conversation =
+            new[]
+            {
+                new ChatMessage
+                {
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        "Fix the Stop button in Seko and build the solution."
+                }
+            };
+
+        Assert.True(
+            SekoSelfUpdatingAgent.ShouldTrackSelfUpdate(
+                conversation));
+    }
+
     [Fact]
     public void Router_ExplicitDeepAnalysisKeepsAgentPath()
     {
