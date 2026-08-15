@@ -12,6 +12,7 @@ public enum SekoAutonomySignal
     MeaningfulProgress,
     NoProgress,
     ResearchCompleted,
+    WorkspaceEvidenceObserved,
     InspectionCompleted,
     ModificationCompleted,
     VerificationSucceeded,

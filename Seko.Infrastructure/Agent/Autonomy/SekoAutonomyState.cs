@@ -24,6 +24,8 @@ public sealed record SekoAutonomyState
     public SekoAutonomyPhase Phase { get; init; } =
         SekoAutonomyPhase.Planning;
 
+    public bool WorkspaceModificationAllowed { get; init; }
+
     public int TotalModelRounds { get; init; }
 
     public int PhaseModelRounds { get; init; }

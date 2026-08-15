@@ -21,7 +21,11 @@ public sealed class SekoAutonomyController
 
     public SekoAutonomyState CreateInitialState()
     {
-        return new SekoAutonomyState();
+        return new SekoAutonomyState
+        {
+            WorkspaceModificationAllowed =
+                _requirements.RequiresModification
+        };
     }
 
     public SekoAutonomyDecision Start(
@@ -78,7 +82,7 @@ public sealed class SekoAutonomyController
         {
             return Incomplete(
                 state,
-                $"Phase budget exhausted for {state.Phase} ({phaseBudget} model rounds)." );
+                $"Phase budget exhausted for {state.Phase} ({phaseBudget} model rounds).");
         }
 
         return Continue(
@@ -119,6 +123,10 @@ public sealed class SekoAutonomyController
 
             SekoAutonomySignal.ResearchCompleted =>
                 CompleteResearch(
+                    state),
+
+            SekoAutonomySignal.WorkspaceEvidenceObserved =>
+                RecordWorkspaceEvidence(
                     state),
 
             SekoAutonomySignal.InspectionCompleted =>
@@ -189,7 +197,7 @@ public sealed class SekoAutonomyController
 
         return Continue(
             updated,
-            "No meaningful progress recorded; one strategy change is still allowed.");
+            "No meaningful progress recorded; the controller permits one bounded strategy change.");
     }
 
     private SekoAutonomyDecision CompleteResearch(
@@ -212,6 +220,26 @@ public sealed class SekoAutonomyController
                 updated,
                 SelectPhaseAfterResearch()),
             "Research evidence accepted; advancing without returning to research.");
+    }
+
+    private SekoAutonomyDecision RecordWorkspaceEvidence(
+        SekoAutonomyState state)
+    {
+        EnsurePhase(
+            state,
+            SekoAutonomyPhase.Inspection,
+            nameof(SekoAutonomySignal.WorkspaceEvidenceObserved));
+
+        return Continue(
+            state with
+            {
+                WorkspaceEvidenceObserved =
+                    true,
+
+                ConsecutiveNoProgressRounds =
+                    0
+            },
+            "Workspace evidence observed; inspection may continue until the model is ready to advance.");
     }
 
     private SekoAutonomyDecision CompleteInspection(
@@ -243,6 +271,14 @@ public sealed class SekoAutonomyController
             state,
             SekoAutonomyPhase.Action,
             nameof(SekoAutonomySignal.ModificationCompleted));
+
+        if (!_requirements.RequiresModification
+            || !state.WorkspaceModificationAllowed)
+        {
+            return Incomplete(
+                state,
+                "Workspace modification was reported without original task permission.");
+        }
 
         var updated =
             state with
@@ -303,24 +339,13 @@ public sealed class SekoAutonomyController
             SekoAutonomyPhase.Verification,
             nameof(SekoAutonomySignal.VerificationFailed));
 
-        if (state.RepairCycles
-            >= _budgetPolicy.MaximumRepairCycles)
-        {
-            return Incomplete(
-                state,
-                $"Verification still failed after {_budgetPolicy.MaximumRepairCycles} repair cycles.");
-        }
-
         var signature =
             NormalizeFailureSignature(
                 detail);
 
-        var updated =
+        var failed =
             state with
             {
-                RepairCycles =
-                    state.RepairCycles + 1,
-
                 LastVerificationFailureSignature =
                     signature,
 
@@ -328,11 +353,34 @@ public sealed class SekoAutonomyController
                     state.ModificationGeneration
             };
 
+        if (!_requirements.RequiresModification
+            || !state.WorkspaceModificationAllowed)
+        {
+            return Incomplete(
+                failed,
+                "Verification failed, but the original task did not grant workspace modification permission. Repair was not entered.");
+        }
+
+        if (state.RepairCycles
+            >= _budgetPolicy.MaximumRepairCycles)
+        {
+            return Incomplete(
+                failed,
+                $"Verification still failed after {_budgetPolicy.MaximumRepairCycles} repair cycles.");
+        }
+
+        var updated =
+            failed with
+            {
+                RepairCycles =
+                    state.RepairCycles + 1
+            };
+
         return Continue(
             Transition(
                 updated,
                 SekoAutonomyPhase.Repair),
-            "Verification failed; entering bounded repair using verification evidence.");
+            "Verification failed; entering bounded repair using verification evidence and the original task permissions.");
     }
 
     private SekoAutonomyDecision CompleteRepair(
@@ -342,6 +390,14 @@ public sealed class SekoAutonomyController
             state,
             SekoAutonomyPhase.Repair,
             nameof(SekoAutonomySignal.RepairCompleted));
+
+        if (!_requirements.RequiresModification
+            || !state.WorkspaceModificationAllowed)
+        {
+            return Incomplete(
+                state,
+                "Repair cannot modify the workspace because the original task did not grant modification permission.");
+        }
 
         var updated =
             state with
@@ -400,6 +456,12 @@ public sealed class SekoAutonomyController
             && !state.WorkspaceEvidenceObserved)
         {
             return "Completion blocked because required workspace evidence was not recorded.";
+        }
+
+        if (!_requirements.RequiresModification
+            && state.ModificationGeneration > 0)
+        {
+            return "Completion blocked because workspace modifications occurred without original task permission.";
         }
 
         if (_requirements.RequiresModification
@@ -545,9 +607,6 @@ public sealed class SekoAutonomyController
         SekoAutonomyState state,
         string reason)
     {
-        // Terminal failure must preserve the final diagnostic counters and
-        // evidence that explain why the controller stopped. Phase transitions
-        // reset per-phase/no-progress counters, so do not use Transition here.
         var incomplete =
             state with
             {

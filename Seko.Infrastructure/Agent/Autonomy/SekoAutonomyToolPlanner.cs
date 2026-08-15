@@ -75,6 +75,16 @@ public static class SekoAutonomyToolPlanner
         ArgumentNullException.ThrowIfNull(
             state);
 
+        if ((state.Phase
+                 is SekoAutonomyPhase.Action
+                     or SekoAutonomyPhase.Repair)
+            && !state.WorkspaceModificationAllowed)
+        {
+            return None(
+                state.Phase,
+                "The original task did not grant workspace modification permission; write-capable phases fail closed.");
+        }
+
         return Create(
             state.Phase);
     }

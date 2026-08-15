@@ -4,7 +4,8 @@ public static class SekoAutonomyLiveLoop
 {
     public static SekoAutonomyController CreateController(
         TaskIntent taskIntent,
-        bool requiresWebResearch)
+        bool requiresWebResearch,
+        SekoAutonomyBudgetPolicy? budgetPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(
             taskIntent);
@@ -19,7 +20,8 @@ public static class SekoAutonomyLiveLoop
                     taskIntent.RequiresModification,
                 RequiresVerification:
                     taskIntent.ExplicitBuildRequested
-                    || taskIntent.RequiresModification));
+                    || taskIntent.RequiresModification),
+            budgetPolicy);
     }
 
     public static SekoAutonomyDecision? ApplyToolResult(
@@ -50,6 +52,17 @@ public static class SekoAutonomyLiveLoop
             return controller.ApplySignal(
                 state,
                 SekoAutonomySignal.ResearchCompleted);
+        }
+
+        if (state.Phase
+                == SekoAutonomyPhase.Inspection
+            && toolSucceeded
+            && IsInspectionEvidenceTool(
+                toolName))
+        {
+            return controller.ApplySignal(
+                state,
+                SekoAutonomySignal.WorkspaceEvidenceObserved);
         }
 
         if (state.Phase
@@ -97,6 +110,38 @@ public static class SekoAutonomyLiveLoop
         return null;
     }
 
+    public static SekoAutonomyDecision ApplyModelResponseWithoutTools(
+        SekoAutonomyController controller,
+        SekoAutonomyState state)
+    {
+        ArgumentNullException.ThrowIfNull(
+            controller);
+
+        ArgumentNullException.ThrowIfNull(
+            state);
+
+        if (state.Phase
+                == SekoAutonomyPhase.Inspection
+            && state.WorkspaceEvidenceObserved)
+        {
+            return controller.ApplySignal(
+                state,
+                SekoAutonomySignal.InspectionCompleted);
+        }
+
+        if (state.Phase
+            == SekoAutonomyPhase.Synthesis)
+        {
+            return controller.ApplySignal(
+                state,
+                SekoAutonomySignal.SynthesisCompleted);
+        }
+
+        return controller.ApplySignal(
+            state,
+            SekoAutonomySignal.NoProgress);
+    }
+
     public static SekoAutonomyDecision? ApplyNoToolResponse(
         SekoAutonomyController controller,
         SekoAutonomyState state,
@@ -110,7 +155,19 @@ public static class SekoAutonomyLiveLoop
 
         if (state.Phase
                 == SekoAutonomyPhase.Inspection
-            && workspaceEvidenceObserved)
+            && workspaceEvidenceObserved
+            && !state.WorkspaceEvidenceObserved)
+        {
+            state =
+                controller.ApplySignal(
+                    state,
+                    SekoAutonomySignal.WorkspaceEvidenceObserved)
+                .State;
+        }
+
+        if (state.Phase
+                == SekoAutonomyPhase.Inspection
+            && state.WorkspaceEvidenceObserved)
         {
             return controller.ApplySignal(
                 state,
@@ -138,6 +195,18 @@ public static class SekoAutonomyLiveLoop
             || toolName.Equals(
                 "web_fetch",
                 StringComparison.Ordinal);
+    }
+
+    private static bool IsInspectionEvidenceTool(
+        string toolName)
+    {
+        return toolName is
+            "search_workspace"
+            or "find_files"
+            or "find_text"
+            or "list_files"
+            or "read_file"
+            or "read_task_log";
     }
 
     private static bool IsModificationTool(
