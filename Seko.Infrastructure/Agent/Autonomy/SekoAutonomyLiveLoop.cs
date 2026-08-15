@@ -22,7 +22,11 @@ public static class SekoAutonomyLiveLoop
                     taskIntent.RequiresModification,
                 RequiresVerification:
                     taskIntent.ExplicitBuildRequested
-                    || taskIntent.RequiresModification),
+                    || taskIntent.RequiresModification)
+            {
+                RequiresProjectExplanationEvidence =
+                    taskIntent.RequiresProjectExplanationEvidence
+            },
             budgetPolicy);
     }
 
@@ -30,7 +34,8 @@ public static class SekoAutonomyLiveLoop
         SekoAutonomyState state,
         string toolName,
         string result,
-        bool toolSucceeded)
+        bool toolSucceeded,
+        string? argumentsJson = null)
     {
         ArgumentNullException.ThrowIfNull(
             state);
@@ -52,13 +57,26 @@ public static class SekoAutonomyLiveLoop
                 return SekoAutonomyToolOutcome.Failure(
                     toolName,
                     SekoAutonomySignal.VerificationFailed,
-                    result);
+                    result,
+                    argumentsJson);
             }
 
             return SekoAutonomyToolOutcome.Failure(
                 toolName,
                 detail:
-                    result);
+                    result,
+                argumentsJson:
+                    argumentsJson);
+        }
+
+        if (IsZeroMatchInspectionResult(
+                toolName,
+                result))
+        {
+            return SekoAutonomyToolOutcome.NoChange(
+                toolName,
+                result,
+                argumentsJson);
         }
 
         if (IsModificationTool(
@@ -68,7 +86,8 @@ public static class SekoAutonomyLiveLoop
         {
             return SekoAutonomyToolOutcome.NoChange(
                 toolName,
-                result);
+                result,
+                argumentsJson);
         }
 
         if (state.Phase
@@ -79,7 +98,8 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.Success(
                 toolName,
                 SekoAutonomySignal.ResearchCompleted,
-                result);
+                result,
+                argumentsJson);
         }
 
         if (state.Phase
@@ -90,7 +110,8 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.Success(
                 toolName,
                 SekoAutonomySignal.WorkspaceEvidenceObserved,
-                result);
+                result,
+                argumentsJson);
         }
 
         if (state.Phase
@@ -101,7 +122,8 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.Success(
                 toolName,
                 SekoAutonomySignal.ModificationCompleted,
-                result);
+                result,
+                argumentsJson);
         }
 
         if (state.Phase
@@ -113,7 +135,8 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.Success(
                 toolName,
                 SekoAutonomySignal.VerificationSucceeded,
-                result);
+                result,
+                argumentsJson);
         }
 
         if (state.Phase
@@ -124,13 +147,16 @@ public static class SekoAutonomyLiveLoop
             return SekoAutonomyToolOutcome.Success(
                 toolName,
                 SekoAutonomySignal.RepairCompleted,
-                result);
+                result,
+                argumentsJson);
         }
 
         return SekoAutonomyToolOutcome.Success(
             toolName,
             detail:
-                result);
+                result,
+            argumentsJson:
+                argumentsJson);
     }
 
     public static SekoAutonomyDecision ApplyToolResult(
@@ -138,7 +164,8 @@ public static class SekoAutonomyLiveLoop
         SekoAutonomyState state,
         string toolName,
         string result,
-        bool toolSucceeded)
+        bool toolSucceeded,
+        string? argumentsJson = null)
     {
         ArgumentNullException.ThrowIfNull(
             controller);
@@ -149,7 +176,8 @@ public static class SekoAutonomyLiveLoop
                 state,
                 toolName,
                 result,
-                toolSucceeded));
+                toolSucceeded,
+                argumentsJson));
     }
 
     public static SekoAutonomyDecision ApplyModelResponseWithoutTools(
@@ -162,26 +190,8 @@ public static class SekoAutonomyLiveLoop
         ArgumentNullException.ThrowIfNull(
             state);
 
-        if (state.Phase
-                == SekoAutonomyPhase.Inspection
-            && state.WorkspaceEvidenceObserved)
-        {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.InspectionCompleted);
-        }
-
-        if (state.Phase
-            == SekoAutonomyPhase.Synthesis)
-        {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.SynthesisCompleted);
-        }
-
-        return controller.ApplySignal(
-            state,
-            SekoAutonomySignal.NoProgress);
+        return controller.ApplyModelResponseWithoutTools(
+            state);
     }
 
     public static SekoAutonomyDecision? ApplyNoToolResponse(
@@ -249,6 +259,43 @@ public static class SekoAutonomyLiveLoop
             or "list_files"
             or "read_file"
             or "read_task_log";
+    }
+
+    private static bool IsZeroMatchInspectionResult(
+        string toolName,
+        string result)
+    {
+        if (toolName.Equals(
+                "search_workspace",
+                StringComparison.Ordinal))
+        {
+            return result.StartsWith(
+                "No relevant accessible workspace matches were found",
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (toolName.Equals(
+                "find_files",
+                StringComparison.Ordinal))
+        {
+            return result.StartsWith(
+                "No accessible files matching",
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (toolName.Equals(
+                "find_text",
+                StringComparison.Ordinal))
+        {
+            return result.StartsWith(
+                    "Text '",
+                    StringComparison.OrdinalIgnoreCase)
+                && result.Contains(
+                    "was not found in",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        return false;
     }
 
     private static bool IsModificationTool(

@@ -151,6 +151,48 @@ public static class TaskIntentAnalyzer
                 "build"
             };
 
+        var projectExplanationTargets =
+            new[]
+            {
+                "this project",
+                "the project",
+                "current project",
+                "this workspace",
+                "the workspace",
+                "current workspace",
+                "this repository",
+                "the repository",
+                "this repo",
+                "the repo",
+                "this codebase",
+                "the codebase",
+                "this application",
+                "the application",
+                "this app",
+                "the app",
+                "your code",
+                "your source"
+            };
+
+        var projectExplanationPhrases =
+            new[]
+            {
+                "explain",
+                "describe",
+                "summarize",
+                "summary",
+                "overview",
+                "what does",
+                "how does",
+                "walk me through"
+            };
+
+        var requiresProjectExplanationEvidence =
+            projectExplanationTargets.Any(
+                normalized.Contains)
+            && projectExplanationPhrases.Any(
+                normalized.Contains);
+
         var hasMutation =
             mutationWords.Any(
                 word =>
@@ -180,7 +222,8 @@ public static class TaskIntentAnalyzer
             && hasWorkspaceTarget;
 
         var requiresWorkspaceTools =
-            hasDiagnosticIntent
+            requiresProjectExplanationEvidence
+            || hasDiagnosticIntent
             || (hasWorkspaceTarget
                 && (hasMutation
                     || hasInspection
@@ -207,7 +250,11 @@ public static class TaskIntentAnalyzer
             new TaskIntent(
                 requiresWorkspaceTools,
                 requiresModification,
-                explicitBuildRequested);
+                explicitBuildRequested)
+            {
+                RequiresProjectExplanationEvidence =
+                    requiresProjectExplanationEvidence
+            };
     }
 
     private static bool ContainsMutationTerm(

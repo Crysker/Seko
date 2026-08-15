@@ -17,7 +17,10 @@ public sealed record SekoAutonomyTaskRequirements(
     bool RequiresResearch,
     bool RequiresWorkspaceInspection,
     bool RequiresModification,
-    bool RequiresVerification);
+    bool RequiresVerification)
+{
+    public bool RequiresProjectExplanationEvidence { get; init; }
+}
 
 public sealed record SekoAutonomyState
 {
@@ -25,6 +28,8 @@ public sealed record SekoAutonomyState
         SekoAutonomyPhase.Planning;
 
     public bool WorkspaceModificationAllowed { get; init; }
+
+    public bool ProjectExplanationEvidenceRequired { get; init; }
 
     public int TotalModelRounds { get; init; }
 
@@ -37,6 +42,19 @@ public sealed record SekoAutonomyState
     public bool ResearchCompleted { get; init; }
 
     public bool WorkspaceEvidenceObserved { get; init; }
+
+    public bool ProjectInventoryObserved { get; init; }
+
+    public int ProjectInventoryDirectoryCount { get; init; }
+
+    public IReadOnlyList<string> ProjectInventoryFiles { get; init; } =
+        Array.Empty<string>();
+
+    public IReadOnlyList<string> InspectedWorkspaceFiles { get; init; } =
+        Array.Empty<string>();
+
+    public IReadOnlyList<string> ProjectExplanationRecoveryCandidates { get; init; } =
+        Array.Empty<string>();
 
     public int ModificationGeneration { get; init; }
 

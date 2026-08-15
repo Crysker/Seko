@@ -414,6 +414,174 @@ public sealed class OllamaLoopEndToEndRegressionTests
     }
 
     [Fact]
+    public async Task ProjectExplanation_PrematureSynthesisGetsNamedRecoveryAndTransitionsOnCoverage()
+    {
+        var transport =
+            new ScriptedOllamaChatTransport(
+                ToolResponse(
+                    ("list_files", "{\"path\":\"\",\"recursive\":true}")),
+                ToolResponse(
+                    ("search_workspace", "{\"query\":\"project purpose\"}")),
+                ToolResponse(
+                    ("read_file", "{\"path\":\"SekoReadOnlyTest.csproj\"}")),
+                MessageResponse(
+                    "The project file tells me enough."),
+                ToolResponse(
+                    ("read_file", "{\"path\":\"Program.cs\"}"),
+                    ("read_file", "{\"path\":\"Greeter.cs\"}")),
+                MessageResponse(
+                    "Grounded project explanation."));
+
+        var toolHost =
+            new ScriptedToolHost();
+
+        toolHost.QueueResult(
+            "list_files",
+            """
+            [FILE] Greeter.cs
+            [FILE] Program.cs
+            [FILE] README.md
+            [FILE] SekoReadOnlyTest.csproj
+            """);
+
+        toolHost.QueueResult(
+            "search_workspace",
+            """
+            WORKSPACE SEARCH: project purpose
+            SCANNED FILES: 4
+            RESULTS: 1
+
+            #1 SekoReadOnlyTest.csproj
+            """);
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: SekoReadOnlyTest.csproj\nTOTAL LINES: 6\n\n<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: Program.cs\nTOTAL LINES: 4\n\nvar greeter = new Greeter();");
+
+        toolHost.QueueResult(
+            "read_file",
+            "FILE: Greeter.cs\nTOTAL LINES: 8\n\npublic sealed class Greeter { }");
+
+        var agent =
+            CreateAgent(
+                toolHost,
+                transport);
+
+        var diagnostics =
+            new List<SekoDiagnosticEvent>();
+
+        agent.DiagnosticEvent +=
+            diagnostics.Add;
+
+        var response =
+            await agent.SendAsync(
+                UserConversation(
+                    "Inspect the files in the current workspace, then explain what this project does. Do not change any files."));
+
+        Assert.Equal(
+            "Grounded project explanation.",
+            response.Content);
+
+        Assert.Equal(
+            new[]
+            {
+                "list_files",
+                "search_workspace",
+                "read_file",
+                "read_file",
+                "read_file"
+            },
+            toolHost.ExecutedCalls
+                .Select(
+                    call => call.ToolName)
+                .ToArray());
+
+        Assert.DoesNotContain(
+            toolHost.ExecutedCalls,
+            call =>
+                call.ToolName is
+                    "write_file"
+                    or "replace_text");
+
+        Assert.Equal(
+            6,
+            transport.Requests.Count);
+
+        for (var requestIndex = 0;
+             requestIndex <= 4;
+             requestIndex++)
+        {
+            AssertToolNames(
+                transport.Requests[requestIndex],
+                InspectionTools);
+        }
+
+        AssertToolNames(
+            transport.Requests[5],
+            Array.Empty<string>());
+
+        var recoveryRequest =
+            transport.Requests[4]
+                .ToJsonString();
+
+        Assert.Contains(
+            "PROJECT EXPLANATION EVIDENCE RECOVERY",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Program.cs",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Greeter.cs",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Use read_file on every concrete path listed above",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        var gateDecisions =
+            diagnostics
+                .Where(
+                    diagnostic =>
+                        diagnostic.Name.Equals(
+                            "host.autonomy_evidence_gate",
+                            StringComparison.Ordinal))
+                .ToArray();
+
+        Assert.Contains(
+            gateDecisions,
+            diagnostic =>
+                (diagnostic.Result ?? string.Empty).Contains(
+                    "Required inspection candidates: Program.cs; Greeter.cs.",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_recovery_candidates=Program.cs|Greeter.cs",
+                    StringComparison.Ordinal));
+
+        Assert.Contains(
+            gateDecisions,
+            diagnostic =>
+                (diagnostic.Result ?? string.Empty).Contains(
+                    "Project explanation evidence gate SATISFIED",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_inspected_files=3",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_recovery_candidates=(none)",
+                    StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task FastConversation_UsesInjectedTransportWithoutStartingToolTask()
     {
         var transport =
