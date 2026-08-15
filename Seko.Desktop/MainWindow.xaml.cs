@@ -463,29 +463,29 @@ public partial class MainWindow : Window
     }
 
     private static string BuildDisplayUserText(
-        string request,
-        IReadOnlyList<SekoAttachment> attachments)
+        string request)
     {
-        var displayRequest =
+        return
             string.IsNullOrWhiteSpace(
                 request)
-                ? "Please inspect the attached context."
+                ? string.Empty
                 : request.Trim();
+    }
 
-        if (attachments.Count == 0)
-        {
-            return
-                displayRequest;
-        }
-
+    private static IReadOnlyList<ChatMessageAttachment> BuildDisplayAttachments(
+        IReadOnlyList<SekoAttachment> attachments)
+    {
         return
-            displayRequest
-            + "\n\nAttached: "
-            + string.Join(
-                ", ",
-                attachments.Select(
+            attachments
+                .Select(
                     attachment =>
-                        attachment.DisplayName));
+                        new ChatMessageAttachment(
+                            attachment.FilePath,
+                            attachment.DisplayName,
+                            attachment.Kind == SekoAttachmentKind.Image
+                                ? ChatMessageAttachmentKind.Image
+                                : ChatMessageAttachmentKind.File))
+                .ToArray();
     }
 
     private void StopAgentButton_Click(
@@ -1045,7 +1045,10 @@ public partial class MainWindow : Window
 
                     Content =
                         BuildDisplayUserText(
-                            requestText,
+                            text),
+
+                    Attachments =
+                        BuildDisplayAttachments(
                             attachments)
                 };
 

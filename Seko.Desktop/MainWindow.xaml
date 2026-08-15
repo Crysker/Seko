@@ -646,6 +646,124 @@
                                                        Foreground="{StaticResource TextSecondaryBrush}"
                                                        Margin="0,1,0,8"/>
 
+                                            <ItemsControl ItemsSource="{Binding Attachments}"
+                                                          Margin="0,0,0,10">
+
+                                                <ItemsControl.Style>
+
+                                                    <Style TargetType="{x:Type ItemsControl}">
+
+                                                        <Setter Property="Visibility"
+                                                                Value="Visible"/>
+
+                                                        <Style.Triggers>
+
+                                                            <Trigger Property="HasItems"
+                                                                     Value="False">
+
+                                                                <Setter Property="Visibility"
+                                                                        Value="Collapsed"/>
+
+                                                            </Trigger>
+
+                                                        </Style.Triggers>
+
+                                                    </Style>
+
+                                                </ItemsControl.Style>
+
+                                                <ItemsControl.ItemsPanel>
+
+                                                    <ItemsPanelTemplate>
+                                                        <WrapPanel/>
+                                                    </ItemsPanelTemplate>
+
+                                                </ItemsControl.ItemsPanel>
+
+                                                <ItemsControl.ItemTemplate>
+
+                                                    <DataTemplate>
+
+                                                        <Grid Margin="0,0,8,8">
+
+                                                            <Border x:Name="SentFileAttachment"
+                                                                    Background="#141C1A"
+                                                                    BorderBrush="#33413D"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="9"
+                                                                    Padding="10,7">
+
+                                                                <StackPanel Orientation="Horizontal">
+
+                                                                    <TextBlock Text="File"
+                                                                               FontSize="10"
+                                                                               Foreground="{StaticResource AccentBrush}"
+                                                                               VerticalAlignment="Center"
+                                                                               Margin="0,0,7,0"/>
+
+                                                                    <TextBlock Text="{Binding DisplayName}"
+                                                                               FontSize="11.5"
+                                                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                                                               MaxWidth="210"
+                                                                               TextTrimming="CharacterEllipsis"
+                                                                               ToolTip="{Binding FilePath}"
+                                                                               VerticalAlignment="Center"/>
+
+                                                                </StackPanel>
+
+                                                            </Border>
+
+                                                            <StackPanel x:Name="SentImageAttachment"
+                                                                        Visibility="Collapsed">
+
+                                                                <Border Background="#101514"
+                                                                        BorderBrush="#34433E"
+                                                                        BorderThickness="1"
+                                                                        CornerRadius="12"
+                                                                        Padding="4">
+
+                                                                    <Image Source="{Binding FilePath}"
+                                                                           MaxWidth="460"
+                                                                           MaxHeight="340"
+                                                                           Stretch="Uniform"
+                                                                           ToolTip="{Binding DisplayName}"/>
+
+                                                                </Border>
+
+                                                                <TextBlock Text="{Binding DisplayName}"
+                                                                           FontSize="10.5"
+                                                                           Foreground="{StaticResource TextMutedBrush}"
+                                                                           MaxWidth="460"
+                                                                           TextTrimming="CharacterEllipsis"
+                                                                           Margin="3,5,0,0"/>
+
+                                                            </StackPanel>
+
+                                                        </Grid>
+
+                                                        <DataTemplate.Triggers>
+
+                                                            <DataTrigger Binding="{Binding Kind}"
+                                                                         Value="Image">
+
+                                                                <Setter TargetName="SentFileAttachment"
+                                                                        Property="Visibility"
+                                                                        Value="Collapsed"/>
+
+                                                                <Setter TargetName="SentImageAttachment"
+                                                                        Property="Visibility"
+                                                                        Value="Visible"/>
+
+                                                            </DataTrigger>
+
+                                                        </DataTemplate.Triggers>
+
+                                                    </DataTemplate>
+
+                                                </ItemsControl.ItemTemplate>
+
+                                            </ItemsControl>
+
                                             <controls:MarkdownRichTextBox
                                                 MarkdownText="{Binding Content, Mode=OneWay}"
                                                 Style="{StaticResource SelectableMessageText}">
@@ -840,43 +958,99 @@
 
                                             <DataTemplate>
 
-                                                <Border Background="#1B2421"
-                                                        BorderBrush="#34433E"
-                                                        BorderThickness="1"
-                                                        CornerRadius="7"
-                                                        Padding="8,5"
-                                                        Margin="0,0,7,4">
+                                                <Grid Margin="0,0,7,4">
 
-                                                    <StackPanel Orientation="Horizontal">
+                                                    <Border x:Name="PendingFileAttachment"
+                                                            Background="#1B2421"
+                                                            BorderBrush="#34433E"
+                                                            BorderThickness="1"
+                                                            CornerRadius="7"
+                                                            Padding="8,5">
 
-                                                        <TextBlock Text="{Binding KindDisplay}"
-                                                                   FontSize="10"
-                                                                   Foreground="{StaticResource AccentBrush}"
-                                                                   VerticalAlignment="Center"
-                                                                   Margin="0,0,7,0"/>
+                                                        <StackPanel Orientation="Horizontal">
 
-                                                        <TextBlock Text="{Binding DisplayName}"
-                                                                   FontSize="11"
-                                                                   Foreground="{StaticResource TextSecondaryBrush}"
-                                                                   MaxWidth="180"
-                                                                   TextTrimming="CharacterEllipsis"
-                                                                   ToolTip="{Binding FilePath}"
-                                                                   VerticalAlignment="Center"/>
+                                                            <TextBlock Text="{Binding KindDisplay}"
+                                                                       FontSize="10"
+                                                                       Foreground="{StaticResource AccentBrush}"
+                                                                       VerticalAlignment="Center"
+                                                                       Margin="0,0,7,0"/>
 
-                                                        <Button Content="x"
-                                                                Tag="{Binding}"
-                                                                Style="{StaticResource BaseButton}"
-                                                                Width="22"
-                                                                Height="22"
-                                                                Padding="0"
-                                                                Margin="7,0,0,0"
-                                                                HorizontalContentAlignment="Center"
-                                                                VerticalContentAlignment="Center"
-                                                                Click="RemoveAttachmentButton_Click"/>
+                                                            <TextBlock Text="{Binding DisplayName}"
+                                                                       FontSize="11"
+                                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                                       MaxWidth="180"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTip="{Binding FilePath}"
+                                                                       VerticalAlignment="Center"/>
 
-                                                    </StackPanel>
+                                                            <Button Content="×"
+                                                                    Tag="{Binding}"
+                                                                    Style="{StaticResource BaseButton}"
+                                                                    Width="22"
+                                                                    Height="22"
+                                                                    Padding="0"
+                                                                    Margin="7,0,0,0"
+                                                                    HorizontalContentAlignment="Center"
+                                                                    VerticalContentAlignment="Center"
+                                                                    Click="RemoveAttachmentButton_Click"/>
 
-                                                </Border>
+                                                        </StackPanel>
+
+                                                    </Border>
+
+                                                    <Border x:Name="PendingImageAttachment"
+                                                            Visibility="Collapsed"
+                                                            Width="108"
+                                                            Height="86"
+                                                            Background="#101514"
+                                                            BorderBrush="#34433E"
+                                                            BorderThickness="1"
+                                                            CornerRadius="9"
+                                                            Padding="3">
+
+                                                        <Grid>
+
+                                                            <Image Source="{Binding FilePath}"
+                                                                   Stretch="UniformToFill"
+                                                                   ToolTip="{Binding DisplayName}"/>
+
+                                                            <Button Content="×"
+                                                                    Tag="{Binding}"
+                                                                    Style="{StaticResource BaseButton}"
+                                                                    Width="24"
+                                                                    Height="24"
+                                                                    Padding="0"
+                                                                    Margin="0,4,4,0"
+                                                                    HorizontalAlignment="Right"
+                                                                    VerticalAlignment="Top"
+                                                                    HorizontalContentAlignment="Center"
+                                                                    VerticalContentAlignment="Center"
+                                                                    Background="#D91A211F"
+                                                                    BorderBrush="#54645F"
+                                                                    Click="RemoveAttachmentButton_Click"/>
+
+                                                        </Grid>
+
+                                                    </Border>
+
+                                                </Grid>
+
+                                                <DataTemplate.Triggers>
+
+                                                    <DataTrigger Binding="{Binding Kind}"
+                                                                 Value="Image">
+
+                                                        <Setter TargetName="PendingFileAttachment"
+                                                                Property="Visibility"
+                                                                Value="Collapsed"/>
+
+                                                        <Setter TargetName="PendingImageAttachment"
+                                                                Property="Visibility"
+                                                                Value="Visible"/>
+
+                                                    </DataTrigger>
+
+                                                </DataTemplate.Triggers>
 
                                             </DataTemplate>
 

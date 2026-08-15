@@ -250,6 +250,50 @@ public sealed class SekoAttachmentRegressionTests
     }
 
     [Fact]
+    public void ChatMessage_AttachmentsStaySeparateFromPromptText()
+    {
+        var message =
+            new ChatMessage
+            {
+                Role =
+                    MessageRole.User,
+
+                Content =
+                    "What is in this image?",
+
+                Attachments =
+                    new[]
+                    {
+                        new ChatMessageAttachment(
+                            @"C:\Temp\preview.png",
+                            "preview.png",
+                            ChatMessageAttachmentKind.Image)
+                    }
+            };
+
+        Assert.Equal(
+            "What is in this image?",
+            message.Content);
+
+        Assert.DoesNotContain(
+            "preview.png",
+            message.Content,
+            StringComparison.Ordinal);
+
+        var attachment =
+            Assert.Single(
+                message.Attachments);
+
+        Assert.Equal(
+            ChatMessageAttachmentKind.Image,
+            attachment.Kind);
+
+        Assert.Equal(
+            "preview.png",
+            attachment.DisplayName);
+    }
+
+    [Fact]
     public void FastConversation_PreservesExpandedBudgetForCurrentAttachmentContext()
     {
         var composed =
