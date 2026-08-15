@@ -144,6 +144,76 @@ public sealed class SekoAutonomyController
             state);
     }
 
+    public string BuildProjectExplanationEvidenceRecoveryInstruction(
+        SekoAutonomyState state)
+    {
+        ArgumentNullException.ThrowIfNull(
+            state);
+
+        if (!_requirements.RequiresProjectExplanationEvidence)
+        {
+            throw new InvalidOperationException(
+                "Project explanation recovery was requested for a task that does not require the project evidence gate.");
+        }
+
+        var gate =
+            EvaluateProjectExplanationEvidence(
+                state);
+
+        if (gate.Satisfied)
+        {
+            return
+                "PROJECT EXPLANATION EVIDENCE RECOVERY\n\n" +
+                "The evidence gate is already satisfied. Proceed to synthesis without more inspection.";
+        }
+
+        if (!state.ProjectInventoryObserved)
+        {
+            return
+                $"""
+                PROJECT EXPLANATION EVIDENCE RECOVERY
+
+                The project explanation evidence gate is BLOCKED.
+
+                {gate.Reason}
+
+                REQUIRED NEXT ACTION:
+                Run list_files on the workspace root with recursive=true.
+                Do not answer the user yet.
+                Do not attempt synthesis until the controller reports that the evidence gate is satisfied.
+                """;
+        }
+
+        var candidates =
+            gate.RequiredInspectionCandidates;
+
+        var candidateLines =
+            candidates.Count == 0
+                ? "- No concrete candidate path is available yet; use the gate reason to gather one materially new piece of read-only evidence."
+                : string.Join(
+                    Environment.NewLine,
+                    candidates.Select(
+                        path => "- " + path));
+
+        return
+            $"""
+            PROJECT EXPLANATION EVIDENCE RECOVERY
+
+            The project explanation evidence gate is BLOCKED.
+
+            {gate.Reason}
+
+            REQUIRED FILE INSPECTION:
+            {candidateLines}
+
+            REQUIRED NEXT ACTION:
+            Use read_file on every concrete path listed above before attempting synthesis again.
+            Do not answer the user yet.
+            Do not repeat broad searches when the controller already names concrete candidate paths.
+            The existing bounded no-progress policy remains authoritative.
+            """;
+    }
+
     public SekoAutonomyDecision ApplySignal(
         SekoAutonomyState state,
         SekoAutonomySignal signal,
@@ -398,19 +468,55 @@ public sealed class SekoAutonomyController
                     0
             };
 
-        if (outcome is not null)
+        if (outcome is null)
         {
+            return Continue(
+                updated,
+                "Workspace evidence observed; inspection may continue until the model is ready to advance.");
+        }
+
+        updated =
+            ApplyProjectEvidenceObservation(
+                updated,
+                outcome);
+
+        if (_requirements.RequiresProjectExplanationEvidence)
+        {
+            var gate =
+                EvaluateProjectExplanationEvidence(
+                    updated);
+
             updated =
-                ApplyProjectEvidenceObservation(
-                    updated,
-                    outcome);
+                updated with
+                {
+                    ProjectExplanationRecoveryCandidates =
+                        gate.RequiredInspectionCandidates
+                };
+
+            if (gate.Satisfied)
+            {
+                var satisfied =
+                    updated with
+                    {
+                        ProjectExplanationRecoveryCandidates =
+                            Array.Empty<string>()
+                    };
+
+                return Continue(
+                    Transition(
+                        satisfied,
+                        SelectPhaseAfterInspection()),
+                    gate.Reason);
+            }
+
+            return Continue(
+                updated,
+                gate.Reason);
         }
 
         return Continue(
             updated,
-            outcome is null
-                ? "Workspace evidence observed; inspection may continue until the model is ready to advance."
-                : $"Workspace evidence observed from '{outcome.ToolName}'; inspection may continue until the evidence gate is satisfied.");
+            $"Workspace evidence observed from '{outcome.ToolName}'; inspection may continue until the model is ready to advance.");
     }
 
     private SekoAutonomyDecision CompleteInspection(
@@ -427,18 +533,28 @@ public sealed class SekoAutonomyController
                 EvaluateProjectExplanationEvidence(
                     state);
 
+            var gatedState =
+                state with
+                {
+                    ProjectExplanationRecoveryCandidates =
+                        gate.RequiredInspectionCandidates
+                };
+
             if (!gate.Satisfied)
             {
                 return RecordNoProgress(
-                    state,
+                    gatedState,
                     gate.Reason);
             }
 
             var projectUpdated =
-                state with
+                gatedState with
                 {
                     WorkspaceEvidenceObserved =
-                        true
+                        true,
+
+                    ProjectExplanationRecoveryCandidates =
+                        Array.Empty<string>()
                 };
 
             return Continue(
@@ -760,7 +876,8 @@ public sealed class SekoAutonomyController
                 false,
                 "Project explanation evidence gate BLOCKED: inventory=False; " +
                 $"inspected_files={state.InspectedWorkspaceFiles.Count}. " +
-                "Missing: run list_files on the workspace root with recursive=true before synthesis.");
+                "Missing: run list_files on the workspace root with recursive=true before synthesis.",
+                Array.Empty<string>());
         }
 
         var relevantInventoryFiles =
@@ -779,7 +896,8 @@ public sealed class SekoAutonomyController
                 $"inventory_files={state.ProjectInventoryFiles.Count}; " +
                 $"inventory_dirs={state.ProjectInventoryDirectoryCount}; " +
                 "relevant_files=0; inspected_relevant=0/0; " +
-                "descriptor=not-required; source=not-required.");
+                "descriptor=not-required; source=not-required.",
+                Array.Empty<string>());
         }
 
         var relevantSet =
@@ -842,6 +960,16 @@ public sealed class SekoAutonomyController
                 $"inspect {sourceFileRequirement - inspectedSourceFileCount} more source/entry-point file(s)");
         }
 
+        var requiredInspectionCandidates =
+            BuildRequiredInspectionCandidates(
+                relevantInventoryFiles,
+                inspectedRelevantFiles,
+                descriptorRequired,
+                descriptorInspected,
+                sourceFileRequirement,
+                inspectedSourceFileCount,
+                requiredFileCount);
+
         var summary =
             "inventory=True; " +
             $"inventory_files={state.ProjectInventoryFiles.Count}; " +
@@ -853,6 +981,13 @@ public sealed class SekoAutonomyController
 
         if (missing.Count > 0)
         {
+            var candidateSummary =
+                requiredInspectionCandidates.Count == 0
+                    ? "none"
+                    : string.Join(
+                        "; ",
+                        requiredInspectionCandidates);
+
             return new SekoProjectExplanationEvidenceGate(
                 false,
                 "Project explanation evidence gate BLOCKED: " +
@@ -861,14 +996,166 @@ public sealed class SekoAutonomyController
                 string.Join(
                     "; ",
                     missing) +
-                ".");
+                ". Required inspection candidates: " +
+                candidateSummary +
+                ".",
+                requiredInspectionCandidates);
         }
 
         return new SekoProjectExplanationEvidenceGate(
             true,
             "Project explanation evidence gate SATISFIED: " +
             summary +
-            ".");
+            ".",
+            Array.Empty<string>());
+    }
+
+    private static IReadOnlyList<string> BuildRequiredInspectionCandidates(
+        IReadOnlyList<string> relevantInventoryFiles,
+        IReadOnlyList<string> inspectedRelevantFiles,
+        bool descriptorRequired,
+        bool descriptorInspected,
+        int sourceFileRequirement,
+        int inspectedSourceFileCount,
+        int requiredFileCount)
+    {
+        var inspected =
+            new HashSet<string>(
+                inspectedRelevantFiles,
+                StringComparer.OrdinalIgnoreCase);
+
+        var uninspected =
+            relevantInventoryFiles
+                .Where(
+                    path => !inspected.Contains(
+                        path))
+                .ToArray();
+
+        var selected =
+            new List<string>();
+
+        if (descriptorRequired
+            && !descriptorInspected)
+        {
+            var descriptor =
+                uninspected
+                    .Where(
+                        IsProjectDescriptor)
+                    .OrderBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase)
+                    .FirstOrDefault();
+
+            if (!string.IsNullOrWhiteSpace(
+                    descriptor))
+            {
+                selected.Add(
+                    descriptor);
+            }
+        }
+
+        var missingSourceCount =
+            Math.Max(
+                0,
+                sourceFileRequirement - inspectedSourceFileCount);
+
+        foreach (var sourcePath
+                 in uninspected
+                    .Where(
+                        IsSourceFile)
+                    .OrderBy(
+                        GetSourceInspectionPriority)
+                    .ThenBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
+        {
+            if (missingSourceCount <= 0)
+            {
+                break;
+            }
+
+            if (selected.Any(
+                    selectedPath =>
+                        selectedPath.Equals(
+                            sourcePath,
+                            StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            selected.Add(
+                sourcePath);
+
+            missingSourceCount--;
+        }
+
+        var missingRelevantCount =
+            Math.Max(
+                0,
+                requiredFileCount - inspectedRelevantFiles.Count);
+
+        foreach (var candidate
+                 in uninspected
+                    .OrderBy(
+                        path => IsProjectDescriptor(path) ? 0 : IsSourceFile(path) ? 1 : 2)
+                    .ThenBy(
+                        path => path,
+                        StringComparer.OrdinalIgnoreCase))
+        {
+            if (selected.Count
+                >= missingRelevantCount)
+            {
+                break;
+            }
+
+            if (selected.Any(
+                    selectedPath =>
+                        selectedPath.Equals(
+                            candidate,
+                            StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            selected.Add(
+                candidate);
+        }
+
+        return selected
+            .Distinct(
+                StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static int GetSourceInspectionPriority(
+        string path)
+    {
+        var fileName =
+            Path.GetFileName(
+                path);
+
+        if (fileName.Equals(
+                "Program.cs",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (fileName.StartsWith(
+                "Main.",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (fileName.StartsWith(
+                "App.",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        return 10;
     }
 
     private static SekoProjectInventory ParseProjectInventory(
@@ -1213,7 +1500,8 @@ public sealed class SekoAutonomyController
 
     private sealed record SekoProjectExplanationEvidenceGate(
         bool Satisfied,
-        string Reason);
+        string Reason,
+        IReadOnlyList<string> RequiredInspectionCandidates);
 
     private SekoAutonomyPhase SelectFirstExecutionPhase()
     {

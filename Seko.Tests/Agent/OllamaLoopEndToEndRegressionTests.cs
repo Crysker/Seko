@@ -414,27 +414,35 @@ public sealed class OllamaLoopEndToEndRegressionTests
     }
 
     [Fact]
-    public async Task ProjectExplanation_PrematureSynthesisIsBlockedUntilEvidenceGateIsSatisfied()
+    public async Task ProjectExplanation_PrematureSynthesisGetsNamedRecoveryAndTransitionsOnCoverage()
     {
         var transport =
             new ScriptedOllamaChatTransport(
                 ToolResponse(
+                    ("list_files", "{\"path\":\"\",\"recursive\":true}")),
+                ToolResponse(
                     ("search_workspace", "{\"query\":\"project purpose\"}")),
+                ToolResponse(
+                    ("read_file", "{\"path\":\"SekoReadOnlyTest.csproj\"}")),
                 MessageResponse(
                     "The project file tells me enough."),
                 ToolResponse(
-                    ("list_files", "{\"path\":\"\",\"recursive\":true}")),
-                ToolResponse(
-                    ("read_file", "{\"path\":\"SekoReadOnlyTest.csproj\"}"),
                     ("read_file", "{\"path\":\"Program.cs\"}"),
                     ("read_file", "{\"path\":\"Greeter.cs\"}")),
-                MessageResponse(
-                    "Inspection is complete."),
                 MessageResponse(
                     "Grounded project explanation."));
 
         var toolHost =
             new ScriptedToolHost();
+
+        toolHost.QueueResult(
+            "list_files",
+            """
+            [FILE] Greeter.cs
+            [FILE] Program.cs
+            [FILE] README.md
+            [FILE] SekoReadOnlyTest.csproj
+            """);
 
         toolHost.QueueResult(
             "search_workspace",
@@ -444,15 +452,6 @@ public sealed class OllamaLoopEndToEndRegressionTests
             RESULTS: 1
 
             #1 SekoReadOnlyTest.csproj
-            """);
-
-        toolHost.QueueResult(
-            "list_files",
-            """
-            [FILE] Greeter.cs
-            [FILE] Program.cs
-            [FILE] README.md
-            [FILE] SekoReadOnlyTest.csproj
             """);
 
         toolHost.QueueResult(
@@ -490,8 +489,8 @@ public sealed class OllamaLoopEndToEndRegressionTests
         Assert.Equal(
             new[]
             {
-                "search_workspace",
                 "list_files",
+                "search_workspace",
                 "read_file",
                 "read_file",
                 "read_file"
@@ -501,25 +500,53 @@ public sealed class OllamaLoopEndToEndRegressionTests
                     call => call.ToolName)
                 .ToArray());
 
+        Assert.DoesNotContain(
+            toolHost.ExecutedCalls,
+            call =>
+                call.ToolName is
+                    "write_file"
+                    or "replace_text");
+
         Assert.Equal(
             6,
             transport.Requests.Count);
 
-        AssertToolNames(
-            transport.Requests[0],
-            InspectionTools);
-
-        AssertToolNames(
-            transport.Requests[1],
-            InspectionTools);
-
-        AssertToolNames(
-            transport.Requests[4],
-            InspectionTools);
+        for (var requestIndex = 0;
+             requestIndex <= 4;
+             requestIndex++)
+        {
+            AssertToolNames(
+                transport.Requests[requestIndex],
+                InspectionTools);
+        }
 
         AssertToolNames(
             transport.Requests[5],
             Array.Empty<string>());
+
+        var recoveryRequest =
+            transport.Requests[4]
+                .ToJsonString();
+
+        Assert.Contains(
+            "PROJECT EXPLANATION EVIDENCE RECOVERY",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Program.cs",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Greeter.cs",
+            recoveryRequest,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Use read_file on every concrete path listed above",
+            recoveryRequest,
+            StringComparison.Ordinal);
 
         var gateDecisions =
             diagnostics
@@ -530,29 +557,28 @@ public sealed class OllamaLoopEndToEndRegressionTests
                             StringComparison.Ordinal))
                 .ToArray();
 
-        Assert.Equal(
-            2,
-            gateDecisions.Length);
+        Assert.Contains(
+            gateDecisions,
+            diagnostic =>
+                (diagnostic.Result ?? string.Empty).Contains(
+                    "Required inspection candidates: Program.cs; Greeter.cs.",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_recovery_candidates=Program.cs|Greeter.cs",
+                    StringComparison.Ordinal));
 
         Assert.Contains(
-            "Project explanation evidence gate BLOCKED",
-            gateDecisions[0].Result ?? string.Empty,
-            StringComparison.Ordinal);
-
-        Assert.Contains(
-            "Project explanation evidence gate SATISFIED",
-            gateDecisions[1].Result ?? string.Empty,
-            StringComparison.Ordinal);
-
-        Assert.Contains(
-            "project_inventory_files=4",
-            gateDecisions[1].Arguments ?? string.Empty,
-            StringComparison.Ordinal);
-
-        Assert.Contains(
-            "project_inspected_files=3",
-            gateDecisions[1].Arguments ?? string.Empty,
-            StringComparison.Ordinal);
+            gateDecisions,
+            diagnostic =>
+                (diagnostic.Result ?? string.Empty).Contains(
+                    "Project explanation evidence gate SATISFIED",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_inspected_files=3",
+                    StringComparison.Ordinal)
+                && (diagnostic.Arguments ?? string.Empty).Contains(
+                    "project_recovery_candidates=(none)",
+                    StringComparison.Ordinal));
     }
 
     [Fact]

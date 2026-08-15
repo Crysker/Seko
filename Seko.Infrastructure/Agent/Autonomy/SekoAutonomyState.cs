@@ -53,6 +53,9 @@ public sealed record SekoAutonomyState
     public IReadOnlyList<string> InspectedWorkspaceFiles { get; init; } =
         Array.Empty<string>();
 
+    public IReadOnlyList<string> ProjectExplanationRecoveryCandidates { get; init; } =
+        Array.Empty<string>();
+
     public int ModificationGeneration { get; init; }
 
     public int VerifiedModificationGeneration { get; init; } =

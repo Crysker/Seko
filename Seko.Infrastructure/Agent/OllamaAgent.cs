@@ -295,12 +295,23 @@ public sealed class OllamaAgent :
                         ? "Changing strategy..."
                         : "Recovering from stalled progress...");
 
+                var recoveryInstruction =
+                    phaseBefore
+                        == SekoAutonomyPhase.Inspection
+                    && taskIntent.RequiresProjectExplanationEvidence
+                    && noToolDecision.Reason.Contains(
+                        "Project explanation evidence gate BLOCKED",
+                        StringComparison.Ordinal)
+                        ? autonomyController.BuildProjectExplanationEvidenceRecoveryInstruction(
+                            autonomyState)
+                        : BuildNoProgressRecoveryInstruction(
+                            autonomyState.Phase,
+                            previousToolCalls.Values);
+
                 AddHostControl(
                     messages,
                     currentTask,
-                    BuildNoProgressRecoveryInstruction(
-                        autonomyState.Phase,
-                        previousToolCalls.Values));
+                    recoveryInstruction);
 
                 continue;
             }
@@ -562,6 +573,17 @@ public sealed class OllamaAgent :
                 ReportAutonomyDecision(
                     "host.autonomy_tool_result",
                     autonomyToolDecision);
+
+                if (taskIntent.RequiresProjectExplanationEvidence
+                    && phaseBeforeToolOutcome
+                        == SekoAutonomyPhase.Inspection
+                    && toolOutcome.Signal
+                        == SekoAutonomySignal.WorkspaceEvidenceObserved)
+                {
+                    ReportAutonomyDecision(
+                        "host.autonomy_evidence_gate",
+                        autonomyToolDecision);
+                }
 
                 autonomyState =
                     autonomyToolDecision.State;
@@ -1846,6 +1868,7 @@ public sealed class OllamaAgent :
             $"project_inventory_files={state.ProjectInventoryFiles.Count}; " +
             $"project_inventory_dirs={state.ProjectInventoryDirectoryCount}; " +
             $"project_inspected_files={state.InspectedWorkspaceFiles.Count}; " +
+            $"project_recovery_candidates={FormatDiagnosticPaths(state.ProjectExplanationRecoveryCandidates)}; " +
             $"write_allowed={state.WorkspaceModificationAllowed}";
 
         ReportDiagnostic(
@@ -1858,6 +1881,16 @@ public sealed class OllamaAgent :
                 decision.Reason,
                 success));
     }
+    private static string FormatDiagnosticPaths(
+        IReadOnlyList<string> paths)
+    {
+        return paths.Count == 0
+            ? "(none)"
+            : string.Join(
+                "|",
+                paths);
+    }
+
     private void ReportDiagnostic(
         SekoDiagnosticEvent diagnosticEvent)
     {

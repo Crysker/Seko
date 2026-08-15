@@ -157,12 +157,6 @@ public sealed class AutonomyEvidenceSufficiencyRegressionTests
                 state,
                 "SekoReadOnlyTest.csproj");
 
-        state =
-            ApplyRead(
-                controller,
-                state,
-                "Program.cs");
-
         var blocked =
             controller.ApplyModelResponseWithoutTools(
                 state);
@@ -171,25 +165,77 @@ public sealed class AutonomyEvidenceSufficiencyRegressionTests
             SekoAutonomyPhase.Inspection,
             blocked.State.Phase);
 
+        Assert.Equal(
+            1,
+            blocked.State.ConsecutiveNoProgressRounds);
+
+        Assert.Equal(
+            new[]
+            {
+                "Program.cs",
+                "Greeter.cs"
+            },
+            blocked.State.ProjectExplanationRecoveryCandidates
+                .ToArray());
+
         Assert.Contains(
-            "inspected_relevant=2/3",
+            "inspected_relevant=1/3",
             blocked.Reason,
             StringComparison.Ordinal);
 
         Assert.Contains(
-            "source=1/2",
+            "source=0/2",
             blocked.Reason,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Required inspection candidates: Program.cs; Greeter.cs.",
+            blocked.Reason,
+            StringComparison.Ordinal);
+
+        var recoveryInstruction =
+            controller.BuildProjectExplanationEvidenceRecoveryInstruction(
+                blocked.State);
+
+        Assert.Contains(
+            "PROJECT EXPLANATION EVIDENCE RECOVERY",
+            recoveryInstruction,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "- Program.cs",
+            recoveryInstruction,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "- Greeter.cs",
+            recoveryInstruction,
+            StringComparison.Ordinal);
+
+        Assert.Contains(
+            "Use read_file on every concrete path listed above",
+            recoveryInstruction,
             StringComparison.Ordinal);
 
         state =
             ApplyRead(
                 controller,
                 blocked.State,
-                "Greeter.cs");
+                "Program.cs");
+
+        Assert.Equal(
+            SekoAutonomyPhase.Inspection,
+            state.Phase);
+
+        Assert.Equal(
+            0,
+            state.ConsecutiveNoProgressRounds);
 
         var satisfied =
-            controller.ApplyModelResponseWithoutTools(
-                state);
+            ApplyReadDecision(
+                controller,
+                state,
+                "Greeter.cs");
 
         Assert.Equal(
             SekoAutonomyDisposition.Continue,
@@ -209,9 +255,68 @@ public sealed class AutonomyEvidenceSufficiencyRegressionTests
             satisfied.Reason,
             StringComparison.Ordinal);
 
+        Assert.Contains(
+            "source=2/2",
+            satisfied.Reason,
+            StringComparison.Ordinal);
+
+        Assert.Empty(
+            satisfied.State.ProjectExplanationRecoveryCandidates);
+
         Assert.Equal(
             3,
             satisfied.State.InspectedWorkspaceFiles.Count);
+    }
+
+    [Fact]
+    public void ProjectExplanationGate_TwoUnproductiveCompletionAttemptsStillStop()
+    {
+        var controller =
+            CreateProjectExplanationController();
+
+        var state =
+            Start(
+                controller);
+
+        state =
+            ApplyInventory(
+                controller,
+                state);
+
+        state =
+            ApplyRead(
+                controller,
+                state,
+                "SekoReadOnlyTest.csproj");
+
+        var firstBlocked =
+            controller.ApplyModelResponseWithoutTools(
+                state);
+
+        Assert.Equal(
+            SekoAutonomyDisposition.Continue,
+            firstBlocked.Disposition);
+
+        Assert.Equal(
+            1,
+            firstBlocked.State.ConsecutiveNoProgressRounds);
+
+        var secondBlocked =
+            controller.ApplyModelResponseWithoutTools(
+                firstBlocked.State);
+
+        Assert.Equal(
+            SekoAutonomyDisposition.Incomplete,
+            secondBlocked.Disposition);
+
+        Assert.Equal(
+            2,
+            secondBlocked.State.ConsecutiveNoProgressRounds);
+
+        Assert.Contains(
+            "No meaningful progress for 2 consecutive rounds in Inspection",
+            secondBlocked.Reason,
+            StringComparison.Ordinal);
     }
 
     private static SekoAutonomyController CreateProjectExplanationController()
@@ -267,13 +372,25 @@ public sealed class AutonomyEvidenceSufficiencyRegressionTests
         string path)
     {
         return
+            ApplyReadDecision(
+                controller,
+                state,
+                path)
+            .State;
+    }
+
+    private static SekoAutonomyDecision ApplyReadDecision(
+        SekoAutonomyController controller,
+        SekoAutonomyState state,
+        string path)
+    {
+        return
             controller.ApplyToolOutcome(
                 state,
                 SekoAutonomyToolOutcome.Success(
                     "read_file",
                     SekoAutonomySignal.WorkspaceEvidenceObserved,
                     $"FILE: {path}\nTOTAL LINES: 10\n\ncontent",
-                    $"{{\"path\":\"{path}\"}}"))
-                .State;
+                    $"{{\"path\":\"{path}\"}}"));
     }
 }
