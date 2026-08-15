@@ -807,51 +807,152 @@
                                 BorderBrush="#34403D"
                                 BorderThickness="1"
                                 CornerRadius="14"
-                                Padding="18,13">
+                                Padding="14,12">
 
                             <Grid>
 
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
 
-                                <TextBox x:Name="MessageInput"
-                                         Grid.Column="0"
-                                         Background="Transparent"
-                                         BorderThickness="0"
-                                         Foreground="{StaticResource TextPrimaryBrush}"
-                                         CaretBrush="{StaticResource AccentStrongBrush}"
-                                         SelectionBrush="{StaticResource AccentBrush}"
-                                         SelectionOpacity="0.35"
-                                         FontFamily="Segoe UI Variable Text, Segoe UI"
-                                         FontSize="15.5"
-                                         AcceptsReturn="True"
-                                         TextWrapping="Wrap"
-                                         MaxHeight="130"
-                                         MinHeight="30"
-                                         VerticalScrollBarVisibility="Auto"
-                                         VerticalContentAlignment="Center"
-                                         PreviewKeyDown="MessageInput_PreviewKeyDown"/>
+                                <Border x:Name="AttachmentTray"
+                                        Grid.Row="0"
+                                        Visibility="Collapsed"
+                                        Background="#101615"
+                                        BorderBrush="#293431"
+                                        BorderThickness="1"
+                                        CornerRadius="9"
+                                        Padding="9,7"
+                                        Margin="0,0,0,10">
 
-                                <Button Grid.Column="1"
-                                        Width="38"
-                                        Height="38"
-                                        Margin="12,0,0,0"
-                                        VerticalAlignment="Bottom"
-                                        HorizontalContentAlignment="Center"
-                                        Style="{StaticResource BaseButton}"
-                                        Background="#28352F"
-                                        BorderBrush="#40564C"
-                                        Padding="0"
-                                        Click="SendButton_Click">
+                                    <ItemsControl x:Name="AttachmentList">
 
-                                    <TextBlock Text="↑"
-                                               FontSize="17"
-                                               Foreground="{StaticResource AccentStrongBrush}"
-                                               HorizontalAlignment="Center"/>
+                                        <ItemsControl.ItemsPanel>
 
-                                </Button>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel/>
+                                            </ItemsPanelTemplate>
+
+                                        </ItemsControl.ItemsPanel>
+
+                                        <ItemsControl.ItemTemplate>
+
+                                            <DataTemplate>
+
+                                                <Border Background="#1B2421"
+                                                        BorderBrush="#34433E"
+                                                        BorderThickness="1"
+                                                        CornerRadius="7"
+                                                        Padding="8,5"
+                                                        Margin="0,0,7,4">
+
+                                                    <StackPanel Orientation="Horizontal">
+
+                                                        <TextBlock Text="{Binding KindDisplay}"
+                                                                   FontSize="10"
+                                                                   Foreground="{StaticResource AccentBrush}"
+                                                                   VerticalAlignment="Center"
+                                                                   Margin="0,0,7,0"/>
+
+                                                        <TextBlock Text="{Binding DisplayName}"
+                                                                   FontSize="11"
+                                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                                   MaxWidth="180"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   ToolTip="{Binding FilePath}"
+                                                                   VerticalAlignment="Center"/>
+
+                                                        <Button Content="x"
+                                                                Tag="{Binding}"
+                                                                Style="{StaticResource BaseButton}"
+                                                                Width="22"
+                                                                Height="22"
+                                                                Padding="0"
+                                                                Margin="7,0,0,0"
+                                                                HorizontalContentAlignment="Center"
+                                                                VerticalContentAlignment="Center"
+                                                                Click="RemoveAttachmentButton_Click"/>
+
+                                                    </StackPanel>
+
+                                                </Border>
+
+                                            </DataTemplate>
+
+                                        </ItemsControl.ItemTemplate>
+
+                                    </ItemsControl>
+
+                                </Border>
+
+                                <Grid Grid.Row="1">
+
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Button x:Name="AttachFileButton"
+                                            Grid.Column="0"
+                                            Content="Attach"
+                                            Style="{StaticResource BaseButton}"
+                                            Padding="10,7"
+                                            Margin="0,0,7,0"
+                                            HorizontalContentAlignment="Center"
+                                            VerticalAlignment="Bottom"
+                                            Click="AttachFileButton_Click"/>
+
+                                    <Button x:Name="CaptureScreenButton"
+                                            Grid.Column="1"
+                                            Content="Screen"
+                                            Style="{StaticResource BaseButton}"
+                                            Padding="10,7"
+                                            Margin="0,0,10,0"
+                                            HorizontalContentAlignment="Center"
+                                            VerticalAlignment="Bottom"
+                                            Click="CaptureScreenButton_Click"/>
+
+                                    <TextBox x:Name="MessageInput"
+                                             Grid.Column="2"
+                                             Background="Transparent"
+                                             BorderThickness="0"
+                                             Foreground="{StaticResource TextPrimaryBrush}"
+                                             CaretBrush="{StaticResource AccentStrongBrush}"
+                                             SelectionBrush="{StaticResource AccentBrush}"
+                                             SelectionOpacity="0.35"
+                                             FontFamily="Segoe UI Variable Text, Segoe UI"
+                                             FontSize="15.5"
+                                             AcceptsReturn="True"
+                                             TextWrapping="Wrap"
+                                             MaxHeight="130"
+                                             MinHeight="30"
+                                             VerticalScrollBarVisibility="Auto"
+                                             VerticalContentAlignment="Center"
+                                             PreviewKeyDown="MessageInput_PreviewKeyDown"/>
+
+                                    <Button Grid.Column="3"
+                                            Width="38"
+                                            Height="38"
+                                            Margin="12,0,0,0"
+                                            VerticalAlignment="Bottom"
+                                            HorizontalContentAlignment="Center"
+                                            Style="{StaticResource BaseButton}"
+                                            Background="#28352F"
+                                            BorderBrush="#40564C"
+                                            Padding="0"
+                                            Click="SendButton_Click">
+
+                                        <TextBlock Text="↑"
+                                                   FontSize="17"
+                                                   Foreground="{StaticResource AccentStrongBrush}"
+                                                   HorizontalAlignment="Center"/>
+
+                                    </Button>
+
+                                </Grid>
 
                             </Grid>
 

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Infrastructure.Attachments;
 using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Infrastructure.Agent;
@@ -55,13 +56,17 @@ public sealed class SekoTransactionalAgent :
         _completedObserved =
             false;
 
-        var userRequest =
+        var rawUserRequest =
             conversation
                 .LastOrDefault(
                     message =>
                         message.Role == MessageRole.User)
                 ?.Content
             ?? "Seko task";
+
+        var userRequest =
+            SekoAttachmentContext.GetUserRequest(
+                rawUserRequest);
 
         var modelName =
             Environment.GetEnvironmentVariable(
