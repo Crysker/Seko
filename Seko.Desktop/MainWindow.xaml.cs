@@ -11,6 +11,7 @@ using Seko.Core.Chat;
 using Seko.Core.Workspaces;
 using Seko.Desktop.Services;
 using Seko.Infrastructure.Agent;
+using Seko.Infrastructure.Attachments;
 using Seko.Infrastructure.Diagnostics;
 using Seko.Infrastructure.Workspaces;
 
@@ -19,6 +20,9 @@ namespace Seko.Desktop;
 public partial class MainWindow : Window
 {
     private readonly ObservableCollection<ChatMessage> _conversation =
+        new();
+
+    private readonly List<ChatMessage> _agentConversation =
         new();
 
     private readonly ObservableCollection<Workspace> _workspaces =
@@ -30,7 +34,13 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<SekoTaskLogSummary> _activityHistoryEntries =
         new();
 
+    private readonly ObservableCollection<SekoAttachment> _pendingAttachments =
+        new();
+
     private readonly SekoTaskLogArchive _taskLogArchive =
+        new();
+
+    private readonly SekoAttachmentAnalyzer _attachmentAnalyzer =
         new();
 
     private readonly IWorkspaceStore _workspaceStore;
@@ -80,6 +90,11 @@ public partial class MainWindow : Window
         ActivityHistoryList.ItemsSource =
             _activityHistoryEntries;
 
+        AttachmentList.ItemsSource =
+            _pendingAttachments;
+
+        RefreshAttachmentTray();
+
         _agent =
             CreateAgentForWorkspace(
                 _activeWorkspace);
@@ -127,6 +142,19 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
+        if (e.Key == Key.V
+            && Keyboard.Modifiers.HasFlag(
+                ModifierKeys.Control))
+        {
+            if (TryPasteClipboardImage())
+            {
+                e.Handled =
+                    true;
+            }
+
+            return;
+        }
+
         if (e.Key != Key.Enter)
         {
             return;
@@ -142,6 +170,322 @@ public partial class MainWindow : Window
             true;
 
         await SendCurrentMessageAsync();
+    }
+
+    private void AttachmentMenuButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return;
+        }
+
+        if (AttachmentMenuButton.ContextMenu
+            is not ContextMenu menu)
+        {
+            return;
+        }
+
+        menu.PlacementTarget =
+            AttachmentMenuButton;
+
+        menu.Placement =
+            System.Windows.Controls.Primitives.PlacementMode.Top;
+
+        menu.IsOpen =
+            true;
+    }
+
+    private void AttachFileMenuItem_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return;
+        }
+
+        var dialog =
+            new OpenFileDialog
+            {
+                Title =
+                    "Attach local context to Seko",
+
+                Multiselect =
+                    true,
+
+                CheckFileExists =
+                    true,
+
+                Filter =
+                    "Supported files|*.txt;*.md;*.log;*.csv;*.json;*.jsonc;*.xml;*.yml;*.yaml;*.toml;*.ini;*.config;*.cs;*.xaml;*.csproj;*.sln;*.props;*.targets;*.html;*.css;*.js;*.ts;*.ps1;*.py;*.sql;*.png;*.jpg;*.jpeg;*.webp|All files|*.*"
+            };
+
+        var result =
+            dialog.ShowDialog(
+                this);
+
+        if (result != true)
+        {
+            return;
+        }
+
+        foreach (var fileName
+                 in dialog.FileNames)
+        {
+            if (_pendingAttachments.Count
+                >= SekoAttachmentAnalyzer.MaximumAttachments)
+            {
+                ShowAttachmentNotice(
+                    $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
+
+                break;
+            }
+
+            TryAddAttachment(
+                fileName);
+        }
+
+        RefreshAttachmentTray();
+
+        MessageInput.Focus();
+    }
+
+    private async void CaptureScreenMenuItem_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return;
+        }
+
+        if (_pendingAttachments.Count
+            >= SekoAttachmentAnalyzer.MaximumAttachments)
+        {
+            ShowAttachmentNotice(
+                $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
+
+            return;
+        }
+
+        var hiddenForCapture =
+            false;
+
+        try
+        {
+            Hide();
+
+            hiddenForCapture =
+                true;
+
+            await Task.Delay(
+                250);
+
+            var path =
+                SekoScreenCaptureService.CapturePrimaryScreen();
+
+            Show();
+
+            hiddenForCapture =
+                false;
+
+            Activate();
+
+            TryAddAttachment(
+                path);
+
+            RefreshAttachmentTray();
+
+            MessageInput.Focus();
+        }
+        catch (Exception exception)
+        {
+            if (hiddenForCapture)
+            {
+                Show();
+
+                Activate();
+            }
+
+            ShowAttachmentNotice(
+                "Seko could not capture the primary screen.\n\n"
+                + exception.Message);
+        }
+    }
+
+    private void MessageInput_Pasting(
+        object sender,
+        DataObjectPastingEventArgs e)
+    {
+        if (TryPasteClipboardImage())
+        {
+            e.CancelCommand();
+        }
+    }
+
+    private bool TryPasteClipboardImage()
+    {
+        if (_isSending
+            || _restartScheduled)
+        {
+            return false;
+        }
+
+        string? path;
+
+        try
+        {
+            if (!SekoScreenCaptureService.TrySaveClipboardImage(
+                    out path))
+            {
+                return false;
+            }
+        }
+        catch (Exception exception)
+        {
+            ShowAttachmentNotice(
+                "Seko could not paste the image from the Windows clipboard.\n\n"
+                + exception.Message);
+
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(
+                path))
+        {
+            return false;
+        }
+
+        if (_pendingAttachments.Count
+            >= SekoAttachmentAnalyzer.MaximumAttachments)
+        {
+            SekoScreenCaptureService.TryDeleteOwnedCapture(
+                path);
+
+            ShowAttachmentNotice(
+                $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
+
+            return true;
+        }
+
+        TryAddAttachment(
+            path);
+
+        RefreshAttachmentTray();
+
+        MessageInput.Focus();
+
+        return true;
+    }
+
+    private void RemoveAttachmentButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_isSending)
+        {
+            return;
+        }
+
+        if (sender
+            is not Button button
+            || button.Tag
+                is not SekoAttachment attachment)
+        {
+            return;
+        }
+
+        _pendingAttachments.Remove(
+            attachment);
+
+        SekoScreenCaptureService.TryDeleteOwnedCapture(
+            attachment.FilePath);
+
+        RefreshAttachmentTray();
+
+        MessageInput.Focus();
+    }
+
+    private void TryAddAttachment(
+        string filePath)
+    {
+        try
+        {
+            var attachment =
+                _attachmentAnalyzer.CreateAttachment(
+                    filePath);
+
+            var alreadyAdded =
+                _pendingAttachments.Any(
+                    current =>
+                        string.Equals(
+                            current.FilePath,
+                            attachment.FilePath,
+                            StringComparison.OrdinalIgnoreCase));
+
+            if (alreadyAdded)
+            {
+                return;
+            }
+
+            _pendingAttachments.Add(
+                attachment);
+        }
+        catch (Exception exception)
+        {
+            ShowAttachmentNotice(
+                exception.Message);
+        }
+    }
+
+    private void RefreshAttachmentTray()
+    {
+        AttachmentTray.Visibility =
+            _pendingAttachments.Count == 0
+                ? Visibility.Collapsed
+                : Visibility.Visible;
+    }
+
+    private void ShowAttachmentNotice(
+        string message)
+    {
+        MessageBox.Show(
+            this,
+            message,
+            "Seko attachment",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
+
+    private static string BuildDisplayUserText(
+        string request)
+    {
+        return
+            string.IsNullOrWhiteSpace(
+                request)
+                ? string.Empty
+                : request.Trim();
+    }
+
+    private static IReadOnlyList<ChatMessageAttachment> BuildDisplayAttachments(
+        IReadOnlyList<SekoAttachment> attachments)
+    {
+        return
+            attachments
+                .Select(
+                    attachment =>
+                        new ChatMessageAttachment(
+                            attachment.FilePath,
+                            attachment.DisplayName,
+                            attachment.Kind == SekoAttachmentKind.Image
+                                ? ChatMessageAttachmentKind.Image
+                                : ChatMessageAttachmentKind.File))
+                .ToArray();
     }
 
     private void StopAgentButton_Click(
@@ -466,6 +810,19 @@ public partial class MainWindow : Window
 
         _conversation.Clear();
 
+        _agentConversation.Clear();
+
+        foreach (var attachment
+                 in _pendingAttachments.ToArray())
+        {
+            SekoScreenCaptureService.TryDeleteOwnedCapture(
+                attachment.FilePath);
+        }
+
+        _pendingAttachments.Clear();
+
+        RefreshAttachmentTray();
+
         _activityEntries.Clear();
 
         ActivityPanel.Visibility =
@@ -624,10 +981,20 @@ public partial class MainWindow : Window
             MessageInput.Text.Trim();
 
         if (string.IsNullOrWhiteSpace(
-                text))
+                text)
+            && _pendingAttachments.Count == 0)
         {
             return;
         }
+
+        var attachments =
+            _pendingAttachments.ToArray();
+
+        var requestText =
+            string.IsNullOrWhiteSpace(
+                text)
+                ? "Please inspect the attached context."
+                : text;
 
         _isSending =
             true;
@@ -643,29 +1010,83 @@ public partial class MainWindow : Window
         MessageInput.IsEnabled =
             false;
 
+        AttachmentMenuButton.IsEnabled =
+            false;
+
+        AttachmentList.IsEnabled =
+            false;
+
         try
         {
-            var userMessage =
+            string attachmentContext =
+                string.Empty;
+
+            if (attachments.Length > 0)
+            {
+                AddActivityLine(
+                    attachments.Any(
+                        attachment =>
+                            attachment.Kind
+                            == SekoAttachmentKind.Image)
+                        ? "Inspecting local attachments and screenshot..."
+                        : "Reading local attachments...");
+
+                attachmentContext =
+                    await _attachmentAnalyzer.BuildContextAsync(
+                        attachments,
+                        requestText,
+                        cancellationSource.Token);
+            }
+
+            var displayUserMessage =
                 new ChatMessage
                 {
                     Role =
                         MessageRole.User,
 
                     Content =
-                        text
+                        BuildDisplayUserText(
+                            text),
+
+                    Attachments =
+                        BuildDisplayAttachments(
+                            attachments)
+                };
+
+            var agentUserMessage =
+                new ChatMessage
+                {
+                    Id =
+                        displayUserMessage.Id,
+
+                    Role =
+                        MessageRole.User,
+
+                    Content =
+                        SekoAttachmentContext.Compose(
+                            requestText,
+                            attachmentContext),
+
+                    CreatedAt =
+                        displayUserMessage.CreatedAt
                 };
 
             AddConversationMessage(
-                userMessage);
+                displayUserMessage,
+                agentUserMessage);
 
             MessageInput.Clear();
+
+            _pendingAttachments.Clear();
+
+            RefreshAttachmentTray();
 
             var activeAgent =
                 _agent;
 
             var response =
                 await activeAgent.SendAsync(
-                    _conversation.ToList(),
+                    _agentConversation.ToList(),
                     cancellationSource.Token);
 
             AddConversationMessage(
@@ -711,8 +1132,8 @@ public partial class MainWindow : Window
                         MessageRole.Assistant,
 
                     Content =
-                        "Something went wrong:\n\n" +
-                        exception.Message
+                        "Something went wrong:\n\n"
+                        + exception.Message
                 });
         }
         finally
@@ -733,6 +1154,12 @@ public partial class MainWindow : Window
             if (!_restartScheduled)
             {
                 MessageInput.IsEnabled =
+                    true;
+
+                AttachmentMenuButton.IsEnabled =
+                    true;
+
+                AttachmentList.IsEnabled =
                     true;
 
                 StopAgentButton.IsEnabled =
@@ -921,10 +1348,15 @@ public partial class MainWindow : Window
     }
 
     private void AddConversationMessage(
-        ChatMessage message)
+        ChatMessage message,
+        ChatMessage? agentMessage = null)
     {
         _conversation.Add(
             message);
+
+        _agentConversation.Add(
+            agentMessage
+            ?? message);
 
         ScrollConversationToBottom();
     }

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Seko.Infrastructure.Diagnostics;
+using Seko.Infrastructure.Attachments;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
@@ -173,6 +174,10 @@ public sealed class SekoSelfUpdatingAgent :
                         message.Role == MessageRole.User)
                 ?.Content
             ?? string.Empty;
+
+        request =
+            SekoAttachmentContext.GetUserRequest(
+                request);
 
         var routingDecision =
             SekoRequestRouter.Route(

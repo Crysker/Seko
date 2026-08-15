@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
 using Seko.Core.Workspaces;
+using Seko.Infrastructure.Attachments;
 using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Infrastructure.Agent;
@@ -72,7 +73,7 @@ public sealed class OllamaAgent :
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
     {
-        var userRequest =
+        var rawUserRequest =
             conversation
                 .LastOrDefault(
                     message =>
@@ -80,12 +81,16 @@ public sealed class OllamaAgent :
                 ?.Content
             ?? "Seko task";
 
+        var userRequest =
+            SekoAttachmentContext.GetUserRequest(
+                rawUserRequest);
+
         var currentTask =
-            userRequest.Trim();
+            rawUserRequest.Trim();
 
         var routingDecision =
             SekoRequestRouter.Route(
-                currentTask);
+                userRequest);
 
         var taskIntent =
             routingDecision.TaskIntent;
@@ -295,7 +300,7 @@ public sealed class OllamaAgent :
                 {
                     return await FinishTaskAsync(
                         content,
-                        currentTask,
+                        userRequest,
                         taskIntent.RequiresWorkspaceTools,
                         cancellationToken);
                 }
