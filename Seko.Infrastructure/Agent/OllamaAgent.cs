@@ -67,13 +67,6 @@ public sealed class OllamaAgent :
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
     {
-        Report(
-            AgentActivityKind.Thinking,
-            "Preparing task...");
-
-        await _toolHost.BeginTaskAsync(
-            cancellationToken);
-
         var userRequest =
             conversation
                 .LastOrDefault(
@@ -93,13 +86,29 @@ public sealed class OllamaAgent :
         var currentTask =
             userRequest.Trim();
 
-        var taskIntent =
-            TaskIntentAnalyzer.Analyze(
+        var routingDecision =
+            SekoRequestRouter.Route(
                 currentTask);
 
+        if (routingDecision.UseFastConversation)
+        {
+            return await SendFastConversationAsync(
+                conversation,
+                cancellationToken);
+        }
+
+        Report(
+            AgentActivityKind.Thinking,
+            "Preparing task...");
+
+        await _toolHost.BeginTaskAsync(
+            cancellationToken);
+
+        var taskIntent =
+            routingDecision.TaskIntent;
+
         var requiresWebResearch =
-            WebResearchIntentDetector.RequiresWebResearch(
-                currentTask);
+            routingDecision.RequiresWebResearch;
 
         var requiresToolExecution =
             taskIntent.RequiresWorkspaceTools
@@ -880,6 +889,115 @@ public sealed class OllamaAgent :
 
         return FinishIncompleteTask(
             $"I reached the {MaximumToolRounds}-round autonomous execution ceiling before I could verify that the current task was complete. The diagnostic log contains exact tool counts and the final phase. I did not mark the task as completed.");
+    }
+
+    private async Task<ChatMessage> SendFastConversationAsync(
+        IReadOnlyList<ChatMessage> conversation,
+        CancellationToken cancellationToken)
+    {
+        Report(
+            AgentActivityKind.Thinking,
+            "Answering...");
+
+        var messages =
+            SekoFastConversation.BuildMessages(
+                conversation);
+
+        var request =
+            SekoFastConversation.CreateRequest(
+                _model,
+                messages);
+
+        using var responseDocument =
+            await SendFastConversationRequestAsync(
+                request,
+                cancellationToken);
+
+        var root =
+            responseDocument.RootElement;
+
+        if (!root.TryGetProperty(
+                "message",
+                out var messageElement))
+        {
+            Report(
+                AgentActivityKind.Error,
+                "Ollama returned an invalid fast-chat response.");
+
+            return CreateAssistantMessage(
+                "Ollama responded, but the response did not contain a message.");
+        }
+
+        var content =
+            GetOptionalString(
+                messageElement,
+                "content");
+
+        if (string.IsNullOrWhiteSpace(
+                content))
+        {
+            Report(
+                AgentActivityKind.Error,
+                "Ollama returned an empty fast-chat response.");
+
+            return CreateAssistantMessage(
+                "Ollama responded, but the response was empty.");
+        }
+
+        Report(
+            AgentActivityKind.Completed,
+            "Done.");
+
+        return CreateAssistantMessage(
+            content.Trim());
+    }
+
+    private async Task<JsonDocument> SendFastConversationRequestAsync(
+        JsonObject request,
+        CancellationToken cancellationToken)
+    {
+        HttpResponseMessage response;
+
+        try
+        {
+            response =
+                await HttpClient.PostAsJsonAsync(
+                    "/api/chat",
+                    request,
+                    cancellationToken);
+        }
+        catch (OperationCanceledException exception)
+            when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(
+                "The Ollama request timed out before the model responded. " +
+                "The task failed rather than being treated as a user Stop action.",
+                exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new InvalidOperationException(
+                "I couldn't connect to Ollama. " +
+                "Make sure Ollama is running and qwen3:8b is installed.\n\n" +
+                exception.Message);
+        }
+
+        using (response)
+        {
+            var responseText =
+                await response.Content.ReadAsStringAsync(
+                    cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    $"Ollama returned HTTP {(int)response.StatusCode}.\n\n" +
+                    responseText);
+            }
+
+            return JsonDocument.Parse(
+                responseText);
+        }
     }
 
     private async Task<ChatMessage> FinishTaskAsync(

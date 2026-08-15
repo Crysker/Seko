@@ -77,6 +77,18 @@ public sealed class SekoTransactionalAgent :
         var logSession =
             _currentLogSession;
 
+        var routingDecision =
+            SekoRequestRouter.Route(
+                userRequest);
+
+        if (routingDecision.UseFastConversation)
+        {
+            return await SendWithoutTransactionAsync(
+                conversation,
+                logSession,
+                cancellationToken);
+        }
+
         var transaction =
             await GitTaskTransaction.BeginAsync(
                 _workspace.RootPath,
@@ -156,6 +168,47 @@ public sealed class SekoTransactionalAgent :
                 logSession,
                 "Failed",
                 message);
+
+            throw;
+        }
+    }
+
+    private async Task<ChatMessage> SendWithoutTransactionAsync(
+        IReadOnlyList<ChatMessage> conversation,
+        SekoTaskLogger.TaskLogSession? logSession,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var response =
+                await _innerAgent.SendAsync(
+                    conversation,
+                    cancellationToken);
+
+            _taskLogger.TryFinish(
+                logSession,
+                _completedObserved
+                    ? "Completed"
+                    : "Incomplete",
+                response.Content);
+
+            return response;
+        }
+        catch (OperationCanceledException)
+        {
+            _taskLogger.TryFinish(
+                logSession,
+                "Stopped",
+                "Stopped by user.");
+
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _taskLogger.TryFinish(
+                logSession,
+                "Failed",
+                $"Task failed: {exception.Message}");
 
             throw;
         }
