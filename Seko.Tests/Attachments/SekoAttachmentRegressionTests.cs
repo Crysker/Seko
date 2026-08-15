@@ -157,6 +157,10 @@ public sealed class SekoAttachmentRegressionTests
             transport.LastRequest!["model"]!
                 .GetValue<string>());
 
+        Assert.False(
+            transport.LastRequest.ContainsKey(
+                "think"));
+
         var messages =
             transport.LastRequest["messages"]!
                 .AsArray();

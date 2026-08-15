@@ -191,21 +191,18 @@ public static class SekoScreenCaptureService
         }
     }
 
-    public static string SaveClipboardImage()
+    public static bool TrySaveClipboardImage(
+        out string? filePath)
     {
-        if (!Clipboard.ContainsImage())
-        {
-            throw new InvalidOperationException(
-                "The Windows clipboard does not contain an image.");
-        }
+        filePath =
+            null;
 
         var bitmapSource =
-            Clipboard.GetImage();
+            TryGetClipboardImage();
 
         if (bitmapSource is null)
         {
-            throw new InvalidOperationException(
-                "Windows reported an image on the clipboard, but Seko could not read it.");
+            return false;
         }
 
         bitmapSource.Freeze();
@@ -219,7 +216,7 @@ public static class SekoScreenCaptureService
         CleanupOldCaptures(
             directory);
 
-        var filePath =
+        filePath =
             Path.Combine(
                 directory,
                 $"screenshot-paste-{DateTime.Now:yyyyMMdd-HHmmss-fff}.png");
@@ -238,8 +235,126 @@ public static class SekoScreenCaptureService
         encoder.Save(
             stream);
 
+        return true;
+    }
+
+    private static BitmapSource? TryGetClipboardImage()
+    {
+        const int maximumAttempts =
+            4;
+
+        for (var attempt = 1;
+             attempt <= maximumAttempts;
+             attempt++)
+        {
+            try
+            {
+                var bitmap =
+                    Clipboard.GetImage();
+
+                if (bitmap is not null)
+                {
+                    return bitmap;
+                }
+
+                var dataObject =
+                    Clipboard.GetDataObject();
+
+                if (dataObject is null)
+                {
+                    return null;
+                }
+
+                var pngBitmap =
+                    TryReadPngClipboardData(
+                        dataObject);
+
+                if (pngBitmap is not null)
+                {
+                    return pngBitmap;
+                }
+
+                return null;
+            }
+            catch (COMException)
+                when (attempt < maximumAttempts)
+            {
+                Thread.Sleep(
+                    30);
+            }
+        }
+
         return
-            filePath;
+            Clipboard.GetImage();
+    }
+
+    private static BitmapSource? TryReadPngClipboardData(
+        IDataObject dataObject)
+    {
+        const string pngFormat =
+            "PNG";
+
+        if (!dataObject.GetDataPresent(
+                pngFormat,
+                true))
+        {
+            return null;
+        }
+
+        var data =
+            dataObject.GetData(
+                pngFormat,
+                true);
+
+        return data switch
+        {
+            Stream stream =>
+                DecodePngStream(
+                    stream),
+
+            byte[] bytes =>
+                DecodePngBytes(
+                    bytes),
+
+            _ =>
+                null
+        };
+    }
+
+    private static BitmapSource? DecodePngStream(
+        Stream stream)
+    {
+        if (stream.CanSeek)
+        {
+            stream.Position =
+                0;
+        }
+
+        var decoder =
+            new PngBitmapDecoder(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad);
+
+        var frame =
+            decoder.Frames.FirstOrDefault();
+
+        frame?.Freeze();
+
+        return frame;
+    }
+
+    private static BitmapSource? DecodePngBytes(
+        byte[] bytes)
+    {
+        using var stream =
+            new MemoryStream(
+                bytes,
+                writable: false);
+
+        return
+            DecodePngStream(
+                stream);
     }
 
     public static void TryDeleteOwnedCapture(

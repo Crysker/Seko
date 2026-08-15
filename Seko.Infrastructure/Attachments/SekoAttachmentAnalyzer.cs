@@ -365,9 +365,6 @@ public sealed class SekoAttachmentAnalyzer
                 ["stream"] =
                     false,
 
-                ["think"] =
-                    false,
-
                 ["keep_alive"] =
                     "10m",
 

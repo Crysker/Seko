@@ -142,6 +142,19 @@ public partial class MainWindow : Window
         object sender,
         KeyEventArgs e)
     {
+        if (e.Key == Key.V
+            && Keyboard.Modifiers.HasFlag(
+                ModifierKeys.Control))
+        {
+            if (TryPasteClipboardImage())
+            {
+                e.Handled =
+                    true;
+            }
+
+            return;
+        }
+
         if (e.Key != Key.Enter)
         {
             return;
@@ -309,63 +322,65 @@ public partial class MainWindow : Window
         object sender,
         DataObjectPastingEventArgs e)
     {
+        if (TryPasteClipboardImage())
+        {
+            e.CancelCommand();
+        }
+    }
+
+    private bool TryPasteClipboardImage()
+    {
         if (_isSending
             || _restartScheduled)
         {
-            return;
+            return false;
         }
 
-        var hasImage =
-            false;
+        string? path;
 
         try
         {
-            hasImage =
-                e.DataObject.GetDataPresent(
-                    DataFormats.Bitmap)
-                || Clipboard.ContainsImage();
-        }
-        catch
-        {
-            // If Windows has the clipboard temporarily locked, preserve normal
-            // text-paste behavior instead of swallowing Ctrl+V.
-            return;
-        }
-
-        if (!hasImage)
-        {
-            return;
-        }
-
-        e.CancelCommand();
-
-        if (_pendingAttachments.Count
-            >= SekoAttachmentAnalyzer.MaximumAttachments)
-        {
-            ShowAttachmentNotice(
-                $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
-
-            return;
-        }
-
-        try
-        {
-            var path =
-                SekoScreenCaptureService.SaveClipboardImage();
-
-            TryAddAttachment(
-                path);
-
-            RefreshAttachmentTray();
-
-            MessageInput.Focus();
+            if (!SekoScreenCaptureService.TrySaveClipboardImage(
+                    out path))
+            {
+                return false;
+            }
         }
         catch (Exception exception)
         {
             ShowAttachmentNotice(
                 "Seko could not paste the image from the Windows clipboard.\n\n"
                 + exception.Message);
+
+            return true;
         }
+
+        if (string.IsNullOrWhiteSpace(
+                path))
+        {
+            return false;
+        }
+
+        if (_pendingAttachments.Count
+            >= SekoAttachmentAnalyzer.MaximumAttachments)
+        {
+            SekoScreenCaptureService.TryDeleteOwnedCapture(
+                path);
+
+            ShowAttachmentNotice(
+                $"Seko accepts up to {SekoAttachmentAnalyzer.MaximumAttachments} attachments per message.");
+
+            return true;
+        }
+
+        TryAddAttachment(
+            path);
+
+        RefreshAttachmentTray();
+
+        MessageInput.Focus();
+
+        return true;
     }
 
     private void RemoveAttachmentButton_Click(
