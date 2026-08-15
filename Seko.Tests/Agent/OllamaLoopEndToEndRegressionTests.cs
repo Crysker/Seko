@@ -358,6 +358,62 @@ public sealed class OllamaLoopEndToEndRegressionTests
     }
 
     [Fact]
+    public async Task DifferentFailedToolsAcrossRounds_CountAsNoProgressAndStop()
+    {
+        var transport =
+            new ScriptedOllamaChatTransport(
+                ToolResponse(
+                    ("read_file", "{\"path\":\"Missing.cs\"}")),
+                ToolResponse(
+                    ("find_text", "{\"path\":\"AlsoMissing.cs\",\"query\":\"Stop\"}")));
+
+        var toolHost =
+            new ScriptedToolHost();
+
+        toolHost.QueueResult(
+            "read_file",
+            "ERROR: Missing.cs was not found.");
+
+        toolHost.QueueResult(
+            "find_text",
+            "ERROR: AlsoMissing.cs was not found.");
+
+        var agent =
+            CreateAgent(
+                toolHost,
+                transport);
+
+        var response =
+            await agent.SendAsync(
+                UserConversation(
+                    "Inspect the project without changing anything."));
+
+        Assert.Equal(
+            2,
+            transport.Requests.Count);
+
+        Assert.Equal(
+            new[]
+            {
+                "read_file",
+                "find_text"
+            },
+            toolHost.ExecutedCalls
+                .Select(
+                    call => call.ToolName)
+                .ToArray());
+
+        Assert.Equal(
+            0,
+            toolHost.AutoCommitCallCount);
+
+        Assert.Contains(
+            "No meaningful progress for 2 consecutive rounds in Inspection",
+            response.Content,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task FastConversation_UsesInjectedTransportWithoutStartingToolTask()
     {
         var transport =

@@ -162,6 +162,98 @@ public sealed class SekoAutonomyController
         };
     }
 
+    public SekoAutonomyDecision ApplyToolOutcome(
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome outcome)
+    {
+        ArgumentNullException.ThrowIfNull(
+            state);
+
+        ArgumentNullException.ThrowIfNull(
+            outcome);
+
+        if (state.IsTerminal)
+        {
+            return DecisionForTerminalState(
+                state);
+        }
+
+        if (string.IsNullOrWhiteSpace(
+                outcome.ToolName))
+        {
+            throw new ArgumentException(
+                "A tool outcome must name the tool that produced it.",
+                nameof(outcome));
+        }
+
+        if (outcome.Signal is
+            SekoAutonomySignal signal)
+        {
+            ValidateToolOutcomeSignal(
+                outcome,
+                signal);
+
+            return ApplySignal(
+                state,
+                signal,
+                outcome.Detail);
+        }
+
+        return outcome.Kind switch
+        {
+            SekoAutonomyToolOutcomeKind.Success =>
+                RecordMeaningfulProgress(
+                    state),
+
+            SekoAutonomyToolOutcomeKind.Failure =>
+                Continue(
+                    state,
+                    $"Tool '{outcome.ToolName}' failed; failed tool execution does not count as meaningful progress."),
+
+            SekoAutonomyToolOutcomeKind.Blocked =>
+                Continue(
+                    state,
+                    $"Tool '{outcome.ToolName}' was blocked; blocked tool requests do not count as meaningful progress."),
+
+            SekoAutonomyToolOutcomeKind.NoChange =>
+                Continue(
+                    state,
+                    $"Tool '{outcome.ToolName}' produced no effective change; no-change outcomes do not count as meaningful progress."),
+
+            _ =>
+                throw new ArgumentOutOfRangeException(
+                    nameof(outcome),
+                    outcome.Kind,
+                    "Unsupported autonomy tool outcome.")
+        };
+    }
+
+    private static void ValidateToolOutcomeSignal(
+        SekoAutonomyToolOutcome outcome,
+        SekoAutonomySignal signal)
+    {
+        var valid =
+            outcome.Kind
+                == SekoAutonomyToolOutcomeKind.Success
+            && signal is
+                SekoAutonomySignal.ResearchCompleted
+                or SekoAutonomySignal.WorkspaceEvidenceObserved
+                or SekoAutonomySignal.ModificationCompleted
+                or SekoAutonomySignal.VerificationSucceeded
+                or SekoAutonomySignal.RepairCompleted
+
+            || outcome.Kind
+                == SekoAutonomyToolOutcomeKind.Failure
+            && signal
+                == SekoAutonomySignal.VerificationFailed;
+
+        if (!valid)
+        {
+            throw new InvalidOperationException(
+                $"Tool outcome {outcome.Kind} cannot report autonomy signal {signal}.");
+        }
+    }
+
     private SekoAutonomyDecision RecordMeaningfulProgress(
         SekoAutonomyState state)
     {

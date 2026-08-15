@@ -298,7 +298,7 @@ public sealed class OllamaAgent :
                 continue;
             }
 
-            var roundExecutedTool =
+            var roundMadeControllerProgress =
                 false;
 
             foreach (
@@ -384,6 +384,20 @@ public sealed class OllamaAgent :
                                 """
                         });
 
+                    var blockedDecision =
+                        autonomyController.ApplyToolOutcome(
+                            autonomyState,
+                            SekoAutonomyToolOutcome.Blocked(
+                                toolName,
+                                $"Blocked in phase {activeToolPlan.Phase}."));
+
+                    ReportAutonomyDecision(
+                        "host.autonomy_tool_result",
+                        blockedDecision);
+
+                    autonomyState =
+                        blockedDecision.State;
+
                     continue;
                 }
 
@@ -427,6 +441,20 @@ public sealed class OllamaAgent :
                                     argumentsJson,
                                     previousCall.Result)
                         });
+
+                    var noChangeDecision =
+                        autonomyController.ApplyToolOutcome(
+                            autonomyState,
+                            SekoAutonomyToolOutcome.NoChange(
+                                toolName,
+                                "Repeated semantic tool call was blocked and reused existing evidence."));
+
+                    ReportAutonomyDecision(
+                        "host.autonomy_tool_result",
+                        noChangeDecision);
+
+                    autonomyState =
+                        noChangeDecision.State;
 
                     continue;
                 }
@@ -478,8 +506,6 @@ public sealed class OllamaAgent :
 
                 toolStopwatch.Stop();
 
-                roundExecutedTool =
-                    true;
 
                 var toolSucceeded =
                     toolName.Equals(
@@ -510,28 +536,33 @@ public sealed class OllamaAgent :
                         argumentsJson,
                         result);
 
-                var phaseToolDecision =
-                    SekoAutonomyLiveLoop.ApplyToolResult(
-                        autonomyController,
+                var phaseBeforeToolOutcome =
+                    autonomyState.Phase;
+
+                var toolOutcome =
+                    SekoAutonomyLiveLoop.ClassifyToolResult(
                         autonomyState,
                         toolName,
                         result,
                         toolSucceeded);
 
                 var autonomyToolDecision =
-                    phaseToolDecision
-                    ?? autonomyController.ApplySignal(
+                    autonomyController.ApplyToolOutcome(
                         autonomyState,
-                        SekoAutonomySignal.MeaningfulProgress);
+                        toolOutcome);
 
                 ReportAutonomyDecision(
-                    phaseToolDecision is null
-                        ? "host.autonomy_progress"
-                        : "host.autonomy_tool_result",
+                    "host.autonomy_tool_result",
                     autonomyToolDecision);
 
                 autonomyState =
                     autonomyToolDecision.State;
+
+                roundMadeControllerProgress =
+                    roundMadeControllerProgress
+                    || toolOutcome.CountsAsMeaningfulProgress
+                    || autonomyState.Phase
+                        != phaseBeforeToolOutcome;
 
                 if (autonomyToolDecision.Disposition
                     == SekoAutonomyDisposition.Incomplete)
@@ -565,7 +596,7 @@ public sealed class OllamaAgent :
                     });
             }
 
-            if (!roundExecutedTool)
+            if (!roundMadeControllerProgress)
             {
                 var stalledDecision =
                     autonomyController.ApplySignal(

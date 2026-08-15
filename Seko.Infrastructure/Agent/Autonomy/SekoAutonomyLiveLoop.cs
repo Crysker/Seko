@@ -26,16 +26,12 @@ public static class SekoAutonomyLiveLoop
             budgetPolicy);
     }
 
-    public static SekoAutonomyDecision? ApplyToolResult(
-        SekoAutonomyController controller,
+    public static SekoAutonomyToolOutcome ClassifyToolResult(
         SekoAutonomyState state,
         string toolName,
         string result,
         bool toolSucceeded)
     {
-        ArgumentNullException.ThrowIfNull(
-            controller);
-
         ArgumentNullException.ThrowIfNull(
             state);
 
@@ -45,39 +41,67 @@ public static class SekoAutonomyLiveLoop
         result ??=
             string.Empty;
 
+        if (!toolSucceeded)
+        {
+            if (state.Phase
+                    == SekoAutonomyPhase.Verification
+                && toolName.Equals(
+                    "build_project",
+                    StringComparison.Ordinal))
+            {
+                return SekoAutonomyToolOutcome.Failure(
+                    toolName,
+                    SekoAutonomySignal.VerificationFailed,
+                    result);
+            }
+
+            return SekoAutonomyToolOutcome.Failure(
+                toolName,
+                detail:
+                    result);
+        }
+
+        if (IsModificationTool(
+                toolName)
+            && !IsSuccessfulModificationResult(
+                result))
+        {
+            return SekoAutonomyToolOutcome.NoChange(
+                toolName,
+                result);
+        }
+
         if (state.Phase
                 == SekoAutonomyPhase.Research
-            && toolSucceeded
             && IsResearchTool(
                 toolName))
         {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.ResearchCompleted);
+            return SekoAutonomyToolOutcome.Success(
+                toolName,
+                SekoAutonomySignal.ResearchCompleted,
+                result);
         }
 
         if (state.Phase
                 == SekoAutonomyPhase.Inspection
-            && toolSucceeded
             && IsInspectionEvidenceTool(
                 toolName))
         {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.WorkspaceEvidenceObserved);
+            return SekoAutonomyToolOutcome.Success(
+                toolName,
+                SekoAutonomySignal.WorkspaceEvidenceObserved,
+                result);
         }
 
         if (state.Phase
                 == SekoAutonomyPhase.Action
-            && toolSucceeded
             && IsModificationTool(
-                toolName)
-            && IsSuccessfulModificationResult(
-                result))
+                toolName))
         {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.ModificationCompleted);
+            return SekoAutonomyToolOutcome.Success(
+                toolName,
+                SekoAutonomySignal.ModificationCompleted,
+                result);
         }
 
         if (state.Phase
@@ -86,30 +110,46 @@ public static class SekoAutonomyLiveLoop
                 "build_project",
                 StringComparison.Ordinal))
         {
-            return controller.ApplySignal(
-                state,
-                toolSucceeded
-                    ? SekoAutonomySignal.VerificationSucceeded
-                    : SekoAutonomySignal.VerificationFailed,
-                toolSucceeded
-                    ? null
-                    : result);
+            return SekoAutonomyToolOutcome.Success(
+                toolName,
+                SekoAutonomySignal.VerificationSucceeded,
+                result);
         }
 
         if (state.Phase
                 == SekoAutonomyPhase.Repair
-            && toolSucceeded
             && IsModificationTool(
-                toolName)
-            && IsSuccessfulModificationResult(
-                result))
+                toolName))
         {
-            return controller.ApplySignal(
-                state,
-                SekoAutonomySignal.RepairCompleted);
+            return SekoAutonomyToolOutcome.Success(
+                toolName,
+                SekoAutonomySignal.RepairCompleted,
+                result);
         }
 
-        return null;
+        return SekoAutonomyToolOutcome.Success(
+            toolName,
+            detail:
+                result);
+    }
+
+    public static SekoAutonomyDecision ApplyToolResult(
+        SekoAutonomyController controller,
+        SekoAutonomyState state,
+        string toolName,
+        string result,
+        bool toolSucceeded)
+    {
+        ArgumentNullException.ThrowIfNull(
+            controller);
+
+        return controller.ApplyToolOutcome(
+            state,
+            ClassifyToolResult(
+                state,
+                toolName,
+                result,
+                toolSucceeded));
     }
 
     public static SekoAutonomyDecision ApplyModelResponseWithoutTools(
