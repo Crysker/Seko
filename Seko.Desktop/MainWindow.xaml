@@ -115,6 +115,70 @@
 
         </Style>
 
+        <Style x:Key="ActivityListItemStyle"
+               TargetType="ListBoxItem">
+
+            <Setter Property="Padding"
+                    Value="0"/>
+
+            <Setter Property="Margin"
+                    Value="0,0,0,6"/>
+
+            <Setter Property="HorizontalContentAlignment"
+                    Value="Stretch"/>
+
+            <Setter Property="FocusVisualStyle"
+                    Value="{x:Null}"/>
+
+            <Setter Property="Template">
+                <Setter.Value>
+
+                    <ControlTemplate TargetType="ListBoxItem">
+
+                        <Border x:Name="ActivityListItemBorder"
+                                Background="Transparent"
+                                BorderBrush="Transparent"
+                                BorderThickness="1"
+                                CornerRadius="9"
+                                Padding="11,10">
+
+                            <ContentPresenter/>
+
+                        </Border>
+
+                        <ControlTemplate.Triggers>
+
+                            <Trigger Property="IsMouseOver"
+                                     Value="True">
+
+                                <Setter TargetName="ActivityListItemBorder"
+                                        Property="Background"
+                                        Value="{StaticResource SurfaceHoverBrush}"/>
+
+                            </Trigger>
+
+                            <Trigger Property="IsSelected"
+                                     Value="True">
+
+                                <Setter TargetName="ActivityListItemBorder"
+                                        Property="Background"
+                                        Value="#202927"/>
+
+                                <Setter TargetName="ActivityListItemBorder"
+                                        Property="BorderBrush"
+                                        Value="#40564C"/>
+
+                            </Trigger>
+
+                        </ControlTemplate.Triggers>
+
+                    </ControlTemplate>
+
+                </Setter.Value>
+            </Setter>
+
+        </Style>
+
         <Style x:Key="StopButton"
                TargetType="Button"
                BasedOn="{StaticResource BaseButton}">
@@ -409,7 +473,9 @@
                                 Background="{StaticResource BorderBrush}"
                                 Margin="4,0,4,12"/>
 
-                        <Button Style="{StaticResource SidebarButton}">
+                        <Button x:Name="ActivitySidebarButton"
+                                Style="{StaticResource SidebarButton}"
+                                Click="ActivitySidebarButton_Click">
                             <TextBlock Text="◌   Activity"
                                        FontSize="13"/>
                         </Button>
@@ -432,7 +498,8 @@
 
             <!-- MAIN -->
 
-            <Grid Grid.Column="1">
+            <Grid x:Name="ChatView"
+                  Grid.Column="1">
 
                 <Grid.RowDefinitions>
                     <RowDefinition Height="68"/>
@@ -798,6 +865,192 @@
                                    Margin="0,8,0,0"/>
 
                     </Grid>
+
+                </Grid>
+
+            </Grid>
+
+            <!-- PERSISTENT ACTIVITY HISTORY -->
+
+            <Grid x:Name="ActivityHistoryView"
+                  Grid.Column="1"
+                  Visibility="Collapsed"
+                  Background="{StaticResource BackgroundBrush}">
+
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="68"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0"
+                        BorderBrush="{StaticResource BorderBrush}"
+                        BorderThickness="0,0,0,1">
+
+                    <Grid Margin="28,0">
+
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel VerticalAlignment="Center">
+
+                            <TextBlock Text="Activity"
+                                       FontSize="16"
+                                       FontWeight="SemiBold"/>
+
+                            <TextBlock x:Name="ActivityHistorySubtitle"
+                                       Text="Recent local task history"
+                                       FontSize="10.5"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Margin="0,3,0,0"/>
+
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+
+                            <Button Content="Refresh"
+                                    Style="{StaticResource BaseButton}"
+                                    Padding="12,7"
+                                    Margin="0,0,8,0"
+                                    HorizontalContentAlignment="Center"
+                                    Click="RefreshActivityHistoryButton_Click"/>
+
+                            <Button Content="Back to chat"
+                                    Style="{StaticResource BaseButton}"
+                                    Padding="12,7"
+                                    HorizontalContentAlignment="Center"
+                                    Click="BackToChatButton_Click"/>
+
+                        </StackPanel>
+
+                    </Grid>
+
+                </Border>
+
+                <Grid Grid.Row="1"
+                      Margin="28">
+
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="340"/>
+                        <ColumnDefinition Width="14"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0"
+                            Background="#C9141919"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="10">
+
+                        <Grid>
+
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="RECENT TASKS"
+                                       FontSize="10"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       Margin="8,5,8,10"/>
+
+                            <ListBox x:Name="ActivityHistoryList"
+                                     Grid.Row="1"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                     ItemContainerStyle="{StaticResource ActivityListItemStyle}"
+                                     SelectionChanged="ActivityHistoryList_SelectionChanged">
+
+                                <ListBox.ItemTemplate>
+
+                                    <DataTemplate>
+
+                                        <StackPanel>
+
+                                            <Grid Margin="0,0,0,5">
+
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+
+                                                <TextBlock Text="{Binding StartedDisplay}"
+                                                           FontSize="11.5"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextPrimaryBrush}"/>
+
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding Status}"
+                                                           FontSize="10.5"
+                                                           Foreground="{StaticResource AccentBrush}"
+                                                           Margin="8,0,0,0"/>
+
+                                            </Grid>
+
+                                            <TextBlock Text="{Binding RequestPreview}"
+                                                       FontSize="11.5"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                       TextWrapping="Wrap"
+                                                       MaxHeight="38"
+                                                       ToolTip="{Binding RequestPreview}"/>
+
+                                            <TextBlock Text="{Binding WorkspaceDisplay}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource TextMutedBrush}"
+                                                       Margin="0,6,0,0"/>
+
+                                        </StackPanel>
+
+                                    </DataTemplate>
+
+                                </ListBox.ItemTemplate>
+
+                            </ListBox>
+
+                        </Grid>
+
+                    </Border>
+
+                    <Border Grid.Column="2"
+                            Background="#C9141919"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="12"
+                            Padding="18">
+
+                        <Grid>
+
+                            <TextBlock x:Name="ActivityHistoryEmptyText"
+                                       Text="Select a task to inspect its local diagnostic log."
+                                       FontSize="13"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       TextAlignment="Center"/>
+
+                            <ScrollViewer x:Name="ActivityHistoryScrollViewer"
+                                          Visibility="Collapsed"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
+
+                                <controls:MarkdownRichTextBox
+                                    x:Name="ActivityHistoryDetails"
+                                    Style="{StaticResource SelectableMessageText}"
+                                    FontSize="13.5"
+                                    MarkdownText=""/>
+
+                            </ScrollViewer>
+
+                        </Grid>
+
+                    </Border>
 
                 </Grid>
 

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,6 +11,7 @@ using Seko.Core.Chat;
 using Seko.Core.Workspaces;
 using Seko.Desktop.Services;
 using Seko.Infrastructure.Agent;
+using Seko.Infrastructure.Diagnostics;
 using Seko.Infrastructure.Workspaces;
 
 namespace Seko.Desktop;
@@ -24,6 +25,12 @@ public partial class MainWindow : Window
         new();
 
     private readonly ObservableCollection<string> _activityEntries =
+        new();
+
+    private readonly ObservableCollection<SekoTaskLogSummary> _activityHistoryEntries =
+        new();
+
+    private readonly SekoTaskLogArchive _taskLogArchive =
         new();
 
     private readonly IWorkspaceStore _workspaceStore;
@@ -69,6 +76,9 @@ public partial class MainWindow : Window
 
         AgentActivityList.ItemsSource =
             _activityEntries;
+
+        ActivityHistoryList.ItemsSource =
+            _activityHistoryEntries;
 
         _agent =
             CreateAgentForWorkspace(
@@ -287,6 +297,154 @@ public partial class MainWindow : Window
             workspace);
     }
 
+    private void ActivitySidebarButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ShowActivityHistory();
+    }
+
+    private void RefreshActivityHistoryButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        RefreshActivityHistory();
+    }
+
+    private void BackToChatButton_Click(
+        object sender,
+        RoutedEventArgs e)
+    {
+        ShowChatView();
+    }
+
+    private void ActivityHistoryList_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        ShowSelectedActivityLog();
+    }
+
+    private void ShowActivityHistory()
+    {
+        ChatView.Visibility =
+            Visibility.Collapsed;
+
+        ActivityHistoryView.Visibility =
+            Visibility.Visible;
+
+        ActivitySidebarButton.Background =
+            FindResource(
+                "SurfaceHoverBrush")
+            as Brush;
+
+        RefreshActivityHistory();
+    }
+
+    private void ShowChatView()
+    {
+        ActivityHistoryView.Visibility =
+            Visibility.Collapsed;
+
+        ChatView.Visibility =
+            Visibility.Visible;
+
+        ActivitySidebarButton.Background =
+            Brushes.Transparent;
+
+        MessageInput.Focus();
+    }
+
+    private void RefreshActivityHistory()
+    {
+        var selectedPath =
+            (ActivityHistoryList.SelectedItem
+                as SekoTaskLogSummary)
+            ?.FilePath;
+
+        var summaries =
+            _taskLogArchive.LoadRecent(
+                100);
+
+        _activityHistoryEntries.Clear();
+
+        foreach (var summary
+                 in summaries)
+        {
+            _activityHistoryEntries.Add(
+                summary);
+        }
+
+        ActivityHistorySubtitle.Text =
+            summaries.Count == 0
+                ? "No local task logs yet"
+                : summaries.Count == 1
+                    ? "1 recent local task"
+                    : $"{summaries.Count} recent local tasks";
+
+        var selection =
+            summaries.FirstOrDefault(
+                summary =>
+                    string.Equals(
+                        summary.FilePath,
+                        selectedPath,
+                        StringComparison.OrdinalIgnoreCase))
+            ?? summaries.FirstOrDefault();
+
+        ActivityHistoryList.SelectedItem =
+            selection;
+
+        if (selection is null)
+        {
+            ActivityHistoryDetails.MarkdownText =
+                string.Empty;
+
+            ActivityHistoryScrollViewer.Visibility =
+                Visibility.Collapsed;
+
+            ActivityHistoryEmptyText.Visibility =
+                Visibility.Visible;
+        }
+    }
+
+    private void ShowSelectedActivityLog()
+    {
+        if (ActivityHistoryList.SelectedItem
+            is not SekoTaskLogSummary summary)
+        {
+            ActivityHistoryDetails.MarkdownText =
+                string.Empty;
+
+            ActivityHistoryScrollViewer.Visibility =
+                Visibility.Collapsed;
+
+            ActivityHistoryEmptyText.Visibility =
+                Visibility.Visible;
+
+            return;
+        }
+
+        if (!_taskLogArchive.TryReadLog(
+                summary,
+                out var content))
+        {
+            content =
+                "# Activity log unavailable\n\n"
+                + "Seko could not read this local diagnostic log.";
+        }
+
+        ActivityHistoryDetails.MarkdownText =
+            content;
+
+        ActivityHistoryEmptyText.Visibility =
+            Visibility.Collapsed;
+
+        ActivityHistoryScrollViewer.Visibility =
+            Visibility.Visible;
+
+        ActivityHistoryScrollViewer.ScrollToTop();
+    }
+
     private void ActivateWorkspace(
         Workspace workspace)
     {
@@ -303,6 +461,8 @@ public partial class MainWindow : Window
         UpdateWorkspaceUi();
 
         SaveWorkspaceState();
+
+        ShowChatView();
 
         _conversation.Clear();
 
@@ -590,6 +750,12 @@ public partial class MainWindow : Window
             }
 
             ScrollConversationToBottom();
+
+            if (ActivityHistoryView.Visibility
+                == Visibility.Visible)
+            {
+                RefreshActivityHistory();
+            }
         }
     }
 
