@@ -29,7 +29,19 @@ public sealed class SekoAutonomyController
                 _requirements.RequiresModification,
 
             ProjectExplanationEvidenceRequired =
-                _requirements.RequiresProjectExplanationEvidence
+                _requirements.RequiresProjectExplanationEvidence,
+
+            ProductIdentityUpdateRequired =
+                _requirements.RequiresProductIdentityUpdate,
+
+            ExpectedCurrentProductVersion =
+                _requirements.ExpectedCurrentProductVersion,
+
+            RequestedProductVersion =
+                _requirements.RequestedProductVersion,
+
+            RequestedProductDisplayName =
+                _requirements.RequestedProductDisplayName
         };
     }
 
@@ -327,6 +339,14 @@ public sealed class SekoAutonomyController
             }
 
             if (signal
+                == SekoAutonomySignal.VerificationSucceeded)
+            {
+                return CompleteVerification(
+                    state,
+                    outcome);
+            }
+
+            if (signal
                 == SekoAutonomySignal.RepairCompleted)
             {
                 return CompleteRepair(
@@ -491,6 +511,25 @@ public sealed class SekoAutonomyController
                 "Workspace evidence observed; inspection may continue until the model is ready to advance.");
         }
 
+        if (_requirements.RequiresProductIdentityUpdate
+            && outcome.ToolName.Equals(
+                "inspect_product_identity",
+                StringComparison.Ordinal))
+        {
+            var identityUpdated =
+                updated with
+                {
+                    ProductIdentityEvidenceObserved =
+                        true
+                };
+
+            return Continue(
+                Transition(
+                    identityUpdated,
+                    SelectPhaseAfterInspection()),
+                "Canonical product identity evidence accepted; advancing directly to the bounded identity edit.");
+        }
+
         updated =
             ApplyProjectEvidenceObservation(
                 updated,
@@ -638,7 +677,8 @@ public sealed class SekoAutonomyController
     }
 
     private SekoAutonomyDecision CompleteVerification(
-        SekoAutonomyState state)
+        SekoAutonomyState state,
+        SekoAutonomyToolOutcome? outcome = null)
     {
         EnsurePhase(
             state,
@@ -651,6 +691,86 @@ public sealed class SekoAutonomyController
             return Incomplete(
                 state,
                 "Verification cannot complete a modification task before a real modification is recorded.");
+        }
+
+        if (_requirements.RequiresProductIdentityUpdate)
+        {
+            if (outcome is null)
+            {
+                return Incomplete(
+                    state,
+                    "Product identity updates require host-owned build, test and identity verification evidence.");
+            }
+
+            var updatedIdentityState =
+                outcome.ToolName switch
+                {
+                    "build_project" =>
+                        state with
+                        {
+                            BuildVerifiedModificationGeneration =
+                                state.ModificationGeneration
+                        },
+
+                    "test_project" =>
+                        state with
+                        {
+                            TestsVerifiedModificationGeneration =
+                                state.ModificationGeneration
+                        },
+
+                    "verify_product_identity" =>
+                        state with
+                        {
+                            ProductIdentityVerifiedModificationGeneration =
+                                state.ModificationGeneration
+                        },
+
+                    _ =>
+                        state
+                };
+
+            var buildVerified =
+                updatedIdentityState.BuildVerifiedModificationGeneration
+                == state.ModificationGeneration;
+
+            var testsVerified =
+                updatedIdentityState.TestsVerifiedModificationGeneration
+                == state.ModificationGeneration;
+
+            var identityVerified =
+                updatedIdentityState.ProductIdentityVerifiedModificationGeneration
+                == state.ModificationGeneration;
+
+            if (!buildVerified
+                || !testsVerified
+                || !identityVerified)
+            {
+                return Continue(
+                    updatedIdentityState,
+                    "Product identity verification progress: "
+                    + $"build={buildVerified}; tests={testsVerified}; identity_ui={identityVerified}. "
+                    + "Remain in Verification until all three gates pass for the current modification generation.");
+            }
+
+            var identityComplete =
+                updatedIdentityState with
+                {
+                    VerifiedModificationGeneration =
+                        state.ModificationGeneration,
+
+                    LastVerificationFailureSignature =
+                        null,
+
+                    LastVerificationFailureGeneration =
+                        -1
+                };
+
+            return Continue(
+                Transition(
+                    identityComplete,
+                    SekoAutonomyPhase.Synthesis),
+                "Product identity build, tests and canonical UI verification all succeeded for the current modification generation.");
         }
 
         var updated =

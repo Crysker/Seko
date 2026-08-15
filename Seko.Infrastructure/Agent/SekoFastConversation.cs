@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Seko.Core.Chat;
+using Seko.Core.Product;
 using Seko.Infrastructure.Attachments;
 
 namespace Seko.Infrastructure.Agent;
@@ -15,9 +16,9 @@ public static class SekoFastConversation
     private const int MaximumCurrentAttachmentMessageCharacters =
         8_000;
 
-    private const string SystemPrompt =
-        """
-        You are Seko, Serkan's local personal AI assistant.
+    private static readonly string SystemPrompt =
+        $$"""
+        You are {{SekoProductIdentity.DisplayName}}, Serkan's local personal AI assistant.
 
         Answer ordinary conversational and knowledge questions directly, clearly
         and concisely. Use the most natural safe interpretation of the user's

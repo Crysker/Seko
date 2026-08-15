@@ -12,6 +12,10 @@ public static class TaskIntentAnalyzer
                     '\u2019',
                     '\'');
 
+        SekoProductIdentityUpdateRequestParser.TryParse(
+            request,
+            out var productIdentityUpdate);
+
         /*
             Explicit read-only wording wins over mutation keywords.
 
@@ -322,7 +326,19 @@ public static class TaskIntentAnalyzer
                     isWorkspaceCapabilityQuestion,
 
                 RequiresProjectExplanationEvidence =
-                    requiresProjectExplanationEvidence
+                    requiresProjectExplanationEvidence,
+
+                RequiresProductIdentityUpdate =
+                    productIdentityUpdate is not null,
+
+                ExpectedCurrentProductVersion =
+                    productIdentityUpdate?.ExpectedCurrentVersion,
+
+                RequestedProductVersion =
+                    productIdentityUpdate?.RequestedVersion,
+
+                RequestedProductDisplayName =
+                    productIdentityUpdate?.RequestedDisplayName
             };
     }
 

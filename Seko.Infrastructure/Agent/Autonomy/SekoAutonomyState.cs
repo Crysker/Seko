@@ -20,6 +20,14 @@ public sealed record SekoAutonomyTaskRequirements(
     bool RequiresVerification)
 {
     public bool RequiresProjectExplanationEvidence { get; init; }
+
+    public bool RequiresProductIdentityUpdate { get; init; }
+
+    public string? ExpectedCurrentProductVersion { get; init; }
+
+    public string? RequestedProductVersion { get; init; }
+
+    public string? RequestedProductDisplayName { get; init; }
 }
 
 public sealed record SekoAutonomyState
@@ -30,6 +38,16 @@ public sealed record SekoAutonomyState
     public bool WorkspaceModificationAllowed { get; init; }
 
     public bool ProjectExplanationEvidenceRequired { get; init; }
+
+    public bool ProductIdentityUpdateRequired { get; init; }
+
+    public string? ExpectedCurrentProductVersion { get; init; }
+
+    public string? RequestedProductVersion { get; init; }
+
+    public string? RequestedProductDisplayName { get; init; }
+
+    public bool ProductIdentityEvidenceObserved { get; init; }
 
     public int TotalModelRounds { get; init; }
 
@@ -64,6 +82,15 @@ public sealed record SekoAutonomyState
         true;
 
     public int VerifiedModificationGeneration { get; init; } =
+        -1;
+
+    public int BuildVerifiedModificationGeneration { get; init; } =
+        -1;
+
+    public int TestsVerifiedModificationGeneration { get; init; } =
+        -1;
+
+    public int ProductIdentityVerifiedModificationGeneration { get; init; } =
         -1;
 
     public string? LastVerificationFailureSignature { get; init; }

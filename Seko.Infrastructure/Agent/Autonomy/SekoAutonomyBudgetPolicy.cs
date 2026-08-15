@@ -14,6 +14,18 @@ public sealed class SekoAutonomyBudgetPolicy
             maximumConsecutiveNoProgressRounds: 2,
             emergencyGlobalRoundLimit: 32);
 
+    public static SekoAutonomyBudgetPolicy ProductIdentityUpdate { get; } =
+        new(
+            researchRounds: 2,
+            inspectionRounds: 3,
+            actionRounds: 4,
+            verificationRounds: 4,
+            repairRounds: 3,
+            synthesisRounds: 1,
+            maximumRepairCycles: 2,
+            maximumConsecutiveNoProgressRounds: 2,
+            emergencyGlobalRoundLimit: 20);
+
     public int ResearchRounds { get; }
 
     public int InspectionRounds { get; }

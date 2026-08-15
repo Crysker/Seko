@@ -10,6 +10,41 @@ public static class SekoAutonomyToolPlanner
                 "web_fetch"
             });
 
+    private static readonly IReadOnlyCollection<string> ProductIdentityInspectionTools =
+        Array.AsReadOnly(
+            new[]
+            {
+                "inspect_product_identity"
+            });
+
+    private static readonly IReadOnlyCollection<string> ProductIdentityActionTools =
+        Array.AsReadOnly(
+            new[]
+            {
+                "read_file",
+                "replace_text",
+                "git_diff"
+            });
+
+    private static readonly IReadOnlyCollection<string> ProductIdentityVerificationTools =
+        Array.AsReadOnly(
+            new[]
+            {
+                "build_project",
+                "test_project",
+                "verify_product_identity"
+            });
+
+    private static readonly IReadOnlyCollection<string> ProductIdentityRepairTools =
+        Array.AsReadOnly(
+            new[]
+            {
+                "inspect_product_identity",
+                "read_file",
+                "replace_text",
+                "git_diff"
+            });
+
     private static readonly IReadOnlyCollection<string> InspectionTools =
         Array.AsReadOnly(
             new[]
@@ -86,8 +121,54 @@ public static class SekoAutonomyToolPlanner
                 "The original task did not grant workspace modification permission; write-capable phases fail closed.");
         }
 
+        if (state.ProductIdentityUpdateRequired)
+        {
+            return CreateProductIdentityPlan(
+                state.Phase);
+        }
+
         return Create(
             state.Phase);
+    }
+
+    private static SekoAutonomyToolPlan CreateProductIdentityPlan(
+        SekoAutonomyPhase phase)
+    {
+        return phase switch
+        {
+            SekoAutonomyPhase.Inspection =>
+                new SekoAutonomyToolPlan(
+                    phase,
+                    ProductIdentityInspectionTools,
+                    "Product identity inspection is deliberately narrow: inspect only the canonical identity source and its consumers."),
+
+            SekoAutonomyPhase.Action =>
+                new SekoAutonomyToolPlan(
+                    phase,
+                    ProductIdentityActionTools,
+                    "Product identity action must make one focused canonical identity edit; do not rename namespaces, projects or historical data."),
+
+            SekoAutonomyPhase.Verification =>
+                new SekoAutonomyToolPlan(
+                    phase,
+                    ProductIdentityVerificationTools,
+                    "Product identity verification requires build_project, test_project and verify_product_identity for the same modification generation."),
+
+            SekoAutonomyPhase.Repair =>
+                new SekoAutonomyToolPlan(
+                    phase,
+                    ProductIdentityRepairTools,
+                    "Repair only the canonical identity edit using concrete verification failure evidence."),
+
+            SekoAutonomyPhase.Synthesis =>
+                None(
+                    phase,
+                    "Synthesis produces the final response after all product identity gates pass."),
+
+            _ =>
+                Create(
+                    phase)
+        };
     }
 
     public static SekoAutonomyToolPlan Create(

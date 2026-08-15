@@ -118,6 +118,43 @@ public sealed class BuildService
                 result.Output);
     }
 
+    public async Task<BuildResult> TestAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var target =
+            FindBuildTarget();
+
+        if (target is null)
+        {
+            return
+                new BuildResult(
+                    null,
+                    -1,
+                    "No .sln or .csproj file was found in this workspace.");
+        }
+
+        var result =
+            await RunProcessAsync(
+                "dotnet",
+                new[]
+                {
+                    "test",
+                    target,
+                    "-c",
+                    "Release",
+                    "--nologo"
+                },
+                _workspaceRoot,
+                cancellationToken,
+                TimeSpan.FromMinutes(5));
+
+        return
+            new BuildResult(
+                target,
+                result.ExitCode,
+                result.Output);
+    }
+
     private static async Task<ProcessResult> RunProcessAsync(
         string executable,
         IEnumerable<string> arguments,

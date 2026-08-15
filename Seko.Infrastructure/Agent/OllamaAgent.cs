@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Seko.Core.Agent;
 using Seko.Core.Chat;
+using Seko.Core.Product;
 using Seko.Core.Workspaces;
 using Seko.Infrastructure.Attachments;
 using Seko.Infrastructure.Diagnostics;
@@ -553,9 +554,14 @@ public sealed class OllamaAgent :
                         StringComparison.Ordinal)
                         ? IsSuccessfulBuildResult(
                             result)
-                        : !result.StartsWith(
-                            "ERROR:",
-                            StringComparison.OrdinalIgnoreCase);
+                        : toolName.Equals(
+                            "test_project",
+                            StringComparison.Ordinal)
+                            ? IsSuccessfulTestResult(
+                                result)
+                            : !result.StartsWith(
+                                "ERROR:",
+                                StringComparison.OrdinalIgnoreCase);
 
                 ReportDiagnostic(
                     new SekoDiagnosticEvent(
@@ -1143,7 +1149,7 @@ public sealed class OllamaAgent :
     {
         return
             $$"""
-            You are Seko, Serkan's local personal AI agent.
+            You are {{SekoProductIdentity.DisplayName}}, Serkan's local personal AI agent.
 
             ACTIVE WORKSPACE
             Name: {{_workspace.Name}}
@@ -1154,6 +1160,30 @@ public sealed class OllamaAgent :
 
             ADAPTIVE CONTEXT
             {{_toolHost.BuildAdaptiveContext(currentTask)}}
+
+            PRODUCT IDENTITY SELF-UPDATE
+            If the CURRENT TASK is an explicit product identity update such as
+            "Update yourself from v1.1.4 to v1.2.0 and rename yourself to S.E.K.O",
+            follow the narrow host-owned identity workflow.
+
+            In Inspection:
+            - call inspect_product_identity with the exact current version,
+              requested version and requested display name from the CURRENT TASK
+            - do not perform broad workspace searches
+
+            In Action:
+            - edit only Seko.Core/Product/SekoProductIdentity.cs unless concrete
+              verification evidence proves the canonical wiring itself is broken
+            - change DisplayName and Version in ONE replace_text call so one
+              successful modification generation contains the complete identity update
+            - do not rename namespaces, assemblies, projects, folders, repository
+              names, classes, internal technical identifiers or historical logs
+
+            In Verification:
+            - run build_project
+            - run test_project
+            - run verify_product_identity with the requested name and version
+            - all three gates must pass after the final modification generation
 
             TASK BOUNDARY
             The CURRENT TASK above is the only executable user task for this
@@ -1641,10 +1671,23 @@ public sealed class OllamaAgent :
 
             "build_project" when IsSuccessfulBuildResult(
                 previousResult) =>
-                "The current source already has a successful build result. If no later build-relevant modification occurred, finish the task rather than rebuilding unchanged source.",
+                "The current source already has a successful build result. If this is a product identity update, continue with test_project and verify_product_identity instead of rebuilding unchanged source.",
 
             "build_project" =>
                 "The previous build did not succeed. Use its compiler/error output to inspect and edit a referenced source file before running another build.",
+
+            "test_project" when IsSuccessfulTestResult(
+                previousResult) =>
+                "The current source already passed tests. If this is a product identity update, continue with the remaining identity verification gate.",
+
+            "test_project" =>
+                "The previous tests did not succeed. Use the test failure output to repair the current task before testing again.",
+
+            "inspect_product_identity" =>
+                "The canonical identity evidence is already available. Use that exact source block for the single focused identity edit.",
+
+            "verify_product_identity" =>
+                "Use the identity verification result as authoritative. If it failed, repair only the named canonical identity or wiring problem.",
 
             "replace_text" when previousResult.Contains(
                 "OLD_TEXT_NOT_FOUND",
@@ -1819,11 +1862,32 @@ public sealed class OllamaAgent :
         return true;
     }
 
+    private static bool IsSuccessfulTestResult(
+        string result)
+    {
+        if (string.IsNullOrWhiteSpace(
+                result)
+            || result.StartsWith(
+                "ERROR:",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return
+            result.Contains(
+                "TEST EXIT CODE: 0",
+                StringComparison.OrdinalIgnoreCase);
+    }
+
     private static SekoDiagnosticEventKind GetDiagnosticKindForTool(
         string toolName)
     {
         if (toolName.Equals(
                 "build_project",
+                StringComparison.Ordinal)
+            || toolName.Equals(
+                "test_project",
                 StringComparison.Ordinal))
         {
             return
@@ -2034,6 +2098,15 @@ public sealed class OllamaAgent :
 
             "build_project" =>
                 "Building project...",
+
+            "test_project" =>
+                "Running project tests...",
+
+            "inspect_product_identity" =>
+                "Inspecting canonical product identity...",
+
+            "verify_product_identity" =>
+                "Verifying product identity and UI wiring...",
 
             _ =>
                 $"Running {toolName}..."

@@ -18,6 +18,12 @@ public static class SekoAutonomyLiveLoop
                 "An execution-suppressed request cannot enter the autonomy tool loop.");
         }
 
+        var selectedBudgetPolicy =
+            budgetPolicy
+            ?? (taskIntent.RequiresProductIdentityUpdate
+                ? SekoAutonomyBudgetPolicy.ProductIdentityUpdate
+                : null);
+
         return new SekoAutonomyController(
             new SekoAutonomyTaskRequirements(
                 RequiresResearch:
@@ -33,9 +39,21 @@ public static class SekoAutonomyLiveLoop
                     || taskIntent.RequiresModification)
             {
                 RequiresProjectExplanationEvidence =
-                    taskIntent.RequiresProjectExplanationEvidence
+                    taskIntent.RequiresProjectExplanationEvidence,
+
+                RequiresProductIdentityUpdate =
+                    taskIntent.RequiresProductIdentityUpdate,
+
+                ExpectedCurrentProductVersion =
+                    taskIntent.ExpectedCurrentProductVersion,
+
+                RequestedProductVersion =
+                    taskIntent.RequestedProductVersion,
+
+                RequestedProductDisplayName =
+                    taskIntent.RequestedProductDisplayName
             },
-            budgetPolicy);
+            selectedBudgetPolicy);
     }
 
     public static SekoAutonomyToolOutcome ClassifyToolResult(
@@ -124,6 +142,36 @@ public static class SekoAutonomyLiveLoop
                 SekoAutonomySignal.ResearchCompleted,
                 result,
                 argumentsJson);
+        }
+
+        if (state.Phase
+                == SekoAutonomyPhase.Inspection
+            && state.ProductIdentityUpdateRequired)
+        {
+            if (toolName.Equals(
+                    "inspect_product_identity",
+                    StringComparison.Ordinal)
+                && ProductIdentityArgumentsMatchState(
+                    state,
+                    argumentsJson,
+                    includeExpectedCurrentVersion: true))
+            {
+                return SekoAutonomyToolOutcome.Success(
+                    toolName,
+                    SekoAutonomySignal.WorkspaceEvidenceObserved,
+                    result,
+                    argumentsJson);
+            }
+
+            if (toolName.Equals(
+                    "inspect_product_identity",
+                    StringComparison.Ordinal))
+            {
+                return SekoAutonomyToolOutcome.NoChange(
+                    toolName,
+                    "Product identity inspection arguments did not match the original user request.",
+                    argumentsJson);
+            }
         }
 
         if (state.Phase
@@ -267,6 +315,8 @@ public static class SekoAutonomyLiveLoop
     {
         return toolName is
             "build_project"
+            or "test_project"
+            or "verify_product_identity"
             or "verify_file";
     }
 
@@ -275,6 +325,43 @@ public static class SekoAutonomyLiveLoop
         string toolName,
         string? argumentsJson)
     {
+        if (state.ProductIdentityUpdateRequired)
+        {
+            if (state.ModificationGeneration <= 0
+                || !state.LatestModificationRequiresBuild
+                || !NormalizeVerificationPath(
+                        state.LatestModificationPath)
+                    .Equals(
+                        "Seko.Core/Product/SekoProductIdentity.cs",
+                        StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (toolName.Equals(
+                    "build_project",
+                    StringComparison.Ordinal)
+                || toolName.Equals(
+                    "test_project",
+                    StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (toolName.Equals(
+                    "verify_product_identity",
+                    StringComparison.Ordinal))
+            {
+                return
+                    ProductIdentityArgumentsMatchState(
+                        state,
+                        argumentsJson,
+                        includeExpectedCurrentVersion: false);
+            }
+
+            return false;
+        }
+
         if (toolName.Equals(
                 "build_project",
                 StringComparison.Ordinal))
@@ -310,6 +397,89 @@ public static class SekoAutonomyLiveLoop
         }
 
         return false;
+    }
+
+    private static bool ProductIdentityArgumentsMatchState(
+        SekoAutonomyState state,
+        string? argumentsJson,
+        bool includeExpectedCurrentVersion)
+    {
+        var requestedName =
+            GetStringArgument(
+                argumentsJson,
+                "requested_name")
+            ?? GetStringArgument(
+                argumentsJson,
+                "expected_name");
+
+        var requestedVersion =
+            GetStringArgument(
+                argumentsJson,
+                "requested_version")
+            ?? GetStringArgument(
+                argumentsJson,
+                "expected_version");
+
+        if (!string.Equals(
+                requestedName,
+                state.RequestedProductDisplayName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                requestedVersion,
+                state.RequestedProductVersion,
+                StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!includeExpectedCurrentVersion)
+        {
+            return true;
+        }
+
+        var currentVersion =
+            GetStringArgument(
+                argumentsJson,
+                "expected_current_version");
+
+        return
+            string.Equals(
+                currentVersion,
+                state.ExpectedCurrentProductVersion,
+                StringComparison.Ordinal);
+    }
+
+    private static string? GetStringArgument(
+        string? argumentsJson,
+        string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(
+                argumentsJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document =
+                JsonDocument.Parse(
+                    argumentsJson);
+
+            if (!document.RootElement.TryGetProperty(
+                    propertyName,
+                    out var property)
+                || property.ValueKind
+                    != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            return property.GetString();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? GetVerificationPathArgument(

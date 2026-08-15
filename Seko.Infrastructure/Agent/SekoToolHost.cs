@@ -19,6 +19,30 @@ namespace Seko.Infrastructure.Agent;
 public sealed class SekoToolHost :
     ISekoToolHost
 {
+    private const string ProductIdentityRelativePath =
+        "Seko.Core/Product/SekoProductIdentity.cs";
+
+    private const string MainWindowRelativePath =
+        "Seko.Desktop/MainWindow.xaml";
+
+    private const string OllamaAgentRelativePath =
+        "Seko.Infrastructure/Agent/OllamaAgent.cs";
+
+    private const string FastConversationRelativePath =
+        "Seko.Infrastructure/Agent/SekoFastConversation.cs";
+
+    private static readonly Regex ProductDisplayNameRegex =
+        new(
+            @"public\s+const\s+string\s+DisplayName\s*=\s*""(?<value>[^""]+)""\s*;",
+            RegexOptions.Compiled
+            | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ProductVersionRegex =
+        new(
+            @"public\s+const\s+string\s+Version\s*=\s*""(?<value>[^""]+)""\s*;",
+            RegexOptions.Compiled
+            | RegexOptions.CultureInvariant);
+
     private static readonly HashSet<string> SearchStopWords =
         new(StringComparer.OrdinalIgnoreCase)
         {
@@ -105,12 +129,17 @@ public sealed class SekoToolHost :
     private bool _buildWasRun;
     private bool _lastBuildSucceeded;
 
+    private bool _testWasRun;
+    private bool _lastTestSucceeded;
+
     /*
-        These generations prevent an old successful build from validating
-        source code that was modified afterward.
+        These generations prevent an old successful build/test/identity check
+        from validating source code that was modified afterward.
     */
     private int _buildRelevantModificationGeneration;
     private int _lastSuccessfulBuildGeneration = -1;
+    private int _lastSuccessfulTestGeneration = -1;
+    private int _lastProductIdentityVerificationGeneration = -1;
 
     public SekoToolHost(
         Workspace workspace)
@@ -171,10 +200,22 @@ public sealed class SekoToolHost :
         _lastBuildSucceeded =
             false;
 
+        _testWasRun =
+            false;
+
+        _lastTestSucceeded =
+            false;
+
         _buildRelevantModificationGeneration =
             0;
 
         _lastSuccessfulBuildGeneration =
+            -1;
+
+        _lastSuccessfulTestGeneration =
+            -1;
+
+        _lastProductIdentityVerificationGeneration =
             -1;
 
         var repositoryState =
@@ -402,6 +443,50 @@ public sealed class SekoToolHost :
                 }),
 
             CreateFunctionTool(
+                "inspect_product_identity",
+                """
+                Inspect Seko's canonical product identity for an explicit self-update.
+
+                This host-owned tool reads the canonical identity source and verifies
+                that the UI/conversation consumers are wired to it. It also checks the
+                expected current version before any edit.
+
+                For the exact request:
+                "Update yourself from v1.1.4 to v1.2.0 and rename yourself to S.E.K.O"
+                pass expected_current_version=1.1.4,
+                requested_version=1.2.0 and requested_name=S.E.K.O.
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["expected_current_version"] =
+                                StringProperty(
+                                    "Current product version stated by the original user request, without a leading v."),
+
+                            ["requested_version"] =
+                                StringProperty(
+                                    "Target product version stated by the original user request, without a leading v."),
+
+                            ["requested_name"] =
+                                StringProperty(
+                                    "Target product display name stated by the original user request.")
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "expected_current_version",
+                            "requested_version",
+                            "requested_name"
+                        }
+                }),
+
+            CreateFunctionTool(
                 "verify_file",
                 """
                 Deterministically verify the latest successful non-build modification
@@ -556,6 +641,51 @@ public sealed class SekoToolHost :
                 solution exists.
                 """,
                 EmptyParameters()),
+
+            CreateFunctionTool(
+                "test_project",
+                """
+                Run the active .NET workspace test suite.
+
+                For a product identity self-update this is a mandatory verification
+                gate after the final modification, separate from build_project.
+                """,
+                EmptyParameters()),
+
+            CreateFunctionTool(
+                "verify_product_identity",
+                """
+                Deterministically verify Seko's canonical product identity and all
+                required UI/conversation consumers after an identity edit.
+
+                This verifier checks the actual canonical source values and verifies
+                that MainWindow plus local conversation prompts consume the canonical
+                identity instead of stale hardcoded display-name/version literals.
+                """,
+                new JsonObject
+                {
+                    ["type"] =
+                        "object",
+
+                    ["properties"] =
+                        new JsonObject
+                        {
+                            ["expected_name"] =
+                                StringProperty(
+                                    "Requested final product display name from the original user request."),
+
+                            ["expected_version"] =
+                                StringProperty(
+                                    "Requested final product version from the original user request, without a leading v.")
+                        },
+
+                    ["required"] =
+                        new JsonArray
+                        {
+                            "expected_name",
+                            "expected_version"
+                        }
+                }),
 
             CreateFunctionTool(
                 "web_research",
@@ -824,6 +954,17 @@ public sealed class SekoToolHost :
             toolRegistry);
 
         registry.Register(
+            new ProductIdentityCapability(
+                InspectProductIdentityAsync,
+                (_, cancellationToken) =>
+                    TestProjectAsync(
+                        cancellationToken),
+                VerifyProductIdentityAsync),
+            CapabilitySource.BuiltIn,
+            permissionPolicy,
+            toolRegistry);
+
+        registry.Register(
             new GitCapability(
                 (_, cancellationToken) =>
                     GetGitStatusAsync(
@@ -923,6 +1064,28 @@ public sealed class SekoToolHost :
         {
             return
                 "Git: changes were not committed because a successful build after the final build-relevant modification has not been verified.";
+        }
+
+        var productIdentityChanged =
+            _changedFiles.Contains(
+                ProductIdentityRelativePath);
+
+        if (productIdentityChanged
+            && (!_testWasRun
+                || !_lastTestSucceeded
+                || _lastSuccessfulTestGeneration
+                    < _buildRelevantModificationGeneration))
+        {
+            return
+                "Git: product identity changes were not committed because the full project tests have not passed after the final identity modification.";
+        }
+
+        if (productIdentityChanged
+            && _lastProductIdentityVerificationGeneration
+                < _buildRelevantModificationGeneration)
+        {
+            return
+                "Git: product identity changes were not committed because canonical product identity/UI verification is missing after the final identity modification.";
         }
 
         var unverifiedArtifact =
@@ -1889,6 +2052,339 @@ public sealed class SekoToolHost :
             + "; persistence=exact; structure="
             + structureKind
             + ".";
+    }
+
+    private async Task<string> InspectProductIdentityAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var expectedCurrentVersion =
+            GetString(
+                arguments,
+                "expected_current_version")
+            .Trim();
+
+        var requestedVersion =
+            GetString(
+                arguments,
+                "requested_version")
+            .Trim();
+
+        var requestedName =
+            GetString(
+                arguments,
+                "requested_name")
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                expectedCurrentVersion)
+            || string.IsNullOrWhiteSpace(
+                requestedVersion)
+            || string.IsNullOrWhiteSpace(
+                requestedName))
+        {
+            return
+                "ERROR: Product identity inspection requires expected_current_version, requested_version and requested_name.";
+        }
+
+        var snapshot =
+            await ReadProductIdentitySnapshotAsync(
+                cancellationToken);
+
+        if (snapshot.Error is not null)
+        {
+            return
+                "ERROR: " + snapshot.Error;
+        }
+
+        if (!string.Equals(
+                snapshot.Version,
+                expectedCurrentVersion,
+                StringComparison.Ordinal))
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_BASELINE_MISMATCH. "
+                + $"The user expected current version {expectedCurrentVersion}, "
+                + $"but the canonical product identity currently reports {snapshot.Version}. "
+                + "Do not perform a blind version replacement.";
+        }
+
+        var consumerError =
+            await ValidateProductIdentityConsumersAsync(
+                cancellationToken);
+
+        if (consumerError is not null)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_WIRING_INVALID. "
+                + consumerError;
+        }
+
+        return
+            "PRODUCT IDENTITY INSPECTION PASSED\n"
+            + $"CANONICAL PATH: {ProductIdentityRelativePath}\n"
+            + $"CURRENT DISPLAY NAME: {snapshot.DisplayName}\n"
+            + $"CURRENT VERSION: {snapshot.Version}\n"
+            + $"REQUESTED DISPLAY NAME: {requestedName}\n"
+            + $"REQUESTED VERSION: {requestedVersion}\n\n"
+            + "REQUIRED ACTION:\n"
+            + "Use ONE replace_text call on the canonical path that changes both "
+            + "DisplayName and Version together. Do not rename namespaces, projects, "
+            + "folders, classes, repository names, internal technical identifiers or historical logs.\n\n"
+            + "CURRENT CANONICAL SOURCE:\n"
+            + snapshot.Source;
+    }
+
+    private async Task<string> TestProjectAsync(
+        CancellationToken cancellationToken)
+    {
+        _testWasRun =
+            true;
+
+        _lastTestSucceeded =
+            false;
+
+        var result =
+            await _buildService.TestAsync(
+                cancellationToken);
+
+        if (!result.HasTarget)
+        {
+            return
+                "ERROR: No .sln or .csproj file was found in this workspace.";
+        }
+
+        _lastTestSucceeded =
+            result.Succeeded;
+
+        if (_lastTestSucceeded)
+        {
+            _lastSuccessfulTestGeneration =
+                _buildRelevantModificationGeneration;
+        }
+
+        return
+            $"TEST TARGET: {ToRelativePath(result.TargetPath!)}\n"
+            + $"TEST EXIT CODE: {result.ExitCode}\n\n"
+            + TrimOutputBalanced(
+                result.Output,
+                10_000);
+    }
+
+    private async Task<string> VerifyProductIdentityAsync(
+        JsonElement arguments,
+        CancellationToken cancellationToken)
+    {
+        var expectedName =
+            GetString(
+                arguments,
+                "expected_name")
+            .Trim();
+
+        var expectedVersion =
+            GetString(
+                arguments,
+                "expected_version")
+            .Trim();
+
+        if (string.IsNullOrWhiteSpace(
+                expectedName)
+            || string.IsNullOrWhiteSpace(
+                expectedVersion))
+        {
+            return
+                "ERROR: Product identity verification requires expected_name and expected_version.";
+        }
+
+        if (!_changedFiles.Contains(
+                ProductIdentityRelativePath))
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_VERIFICATION_FAILED. "
+                + "The canonical identity file was not successfully modified by this task.";
+        }
+
+        var snapshot =
+            await ReadProductIdentitySnapshotAsync(
+                cancellationToken);
+
+        if (snapshot.Error is not null)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_VERIFICATION_FAILED. "
+                + snapshot.Error;
+        }
+
+        if (!string.Equals(
+                snapshot.DisplayName,
+                expectedName,
+                StringComparison.Ordinal)
+            || !string.Equals(
+                snapshot.Version,
+                expectedVersion,
+                StringComparison.Ordinal))
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_VERIFICATION_FAILED. "
+                + $"Expected name/version {expectedName} {expectedVersion}, "
+                + $"but canonical source contains {snapshot.DisplayName} {snapshot.Version}.";
+        }
+
+        var consumerError =
+            await ValidateProductIdentityConsumersAsync(
+                cancellationToken);
+
+        if (consumerError is not null)
+        {
+            return
+                "ERROR: PRODUCT_IDENTITY_VERIFICATION_FAILED. "
+                + consumerError;
+        }
+
+        _lastProductIdentityVerificationGeneration =
+            _buildRelevantModificationGeneration;
+
+        return
+            "PRODUCT IDENTITY VERIFICATION PASSED: "
+            + $"display_name={snapshot.DisplayName}; "
+            + $"version={snapshot.Version}; "
+            + "ui=canonical; conversation_identity=canonical; "
+            + $"modification_generation={_buildRelevantModificationGeneration}.";
+    }
+
+    private async Task<ProductIdentitySnapshot> ReadProductIdentitySnapshotAsync(
+        CancellationToken cancellationToken)
+    {
+        var fullPath =
+            _pathGuard.ResolveSafePath(
+                ProductIdentityRelativePath);
+
+        if (!File.Exists(
+                fullPath))
+        {
+            return
+                new ProductIdentitySnapshot(
+                    null,
+                    null,
+                    string.Empty,
+                    $"Canonical product identity file not found: {ProductIdentityRelativePath}");
+        }
+
+        var source =
+            await File.ReadAllTextAsync(
+                fullPath,
+                cancellationToken);
+
+        var displayNameMatch =
+            ProductDisplayNameRegex.Match(
+                source);
+
+        var versionMatch =
+            ProductVersionRegex.Match(
+                source);
+
+        if (!displayNameMatch.Success
+            || !versionMatch.Success)
+        {
+            return
+                new ProductIdentitySnapshot(
+                    null,
+                    null,
+                    source,
+                    "Canonical product identity constants could not be parsed.");
+        }
+
+        return
+            new ProductIdentitySnapshot(
+                displayNameMatch.Groups["value"].Value,
+                versionMatch.Groups["value"].Value,
+                source,
+                null);
+    }
+
+    private async Task<string?> ValidateProductIdentityConsumersAsync(
+        CancellationToken cancellationToken)
+    {
+        var requiredFiles =
+            new[]
+            {
+                MainWindowRelativePath,
+                OllamaAgentRelativePath,
+                FastConversationRelativePath
+            };
+
+        var contents =
+            new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+
+        foreach (var relativePath
+                 in requiredFiles)
+        {
+            var fullPath =
+                _pathGuard.ResolveSafePath(
+                    relativePath);
+
+            if (!File.Exists(
+                    fullPath))
+            {
+                return
+                    $"Required identity consumer is missing: {relativePath}.";
+            }
+
+            contents[relativePath] =
+                await File.ReadAllTextAsync(
+                    fullPath,
+                    cancellationToken);
+        }
+
+        var xaml =
+            contents[MainWindowRelativePath];
+
+        var requiredXamlFragments =
+            new[]
+            {
+                "Title=\"{x:Static product:SekoProductIdentity.DisplayName}\"",
+                "Text=\"{x:Static product:SekoProductIdentity.DisplayName}\"",
+                "Text=\"{x:Static product:SekoProductIdentity.DisplayVersion}\"",
+                "Value=\"{x:Static product:SekoProductIdentity.DisplayName}\""
+            };
+
+        foreach (var fragment
+                 in requiredXamlFragments)
+        {
+            if (!xaml.Contains(
+                    fragment,
+                    StringComparison.Ordinal))
+            {
+                return
+                    "MainWindow.xaml is not fully wired to the canonical identity source. Missing: "
+                    + fragment;
+            }
+        }
+
+        if (xaml.Contains(
+                "Text=\"v1.1.4\"",
+                StringComparison.Ordinal)
+            || xaml.Contains(
+                "Text=\"SEKO\"",
+                StringComparison.Ordinal))
+        {
+            return
+                "MainWindow.xaml still contains stale hardcoded product identity literals.";
+        }
+
+        if (!contents[OllamaAgentRelativePath].Contains(
+                "SekoProductIdentity.DisplayName",
+                StringComparison.Ordinal)
+            || !contents[FastConversationRelativePath].Contains(
+                "SekoProductIdentity.DisplayName",
+                StringComparison.Ordinal))
+        {
+            return
+                "Conversation identity prompts are not wired to the canonical product identity.";
+        }
+
+        return null;
     }
 
     private static async Task<string> ReadTaskLogAsync(
@@ -2945,6 +3441,12 @@ public sealed class SekoToolHost :
         string ContentHash,
         int ModificationGeneration,
         int VerifiedGeneration);
+
+    private sealed record ProductIdentitySnapshot(
+        string? DisplayName,
+        string? Version,
+        string Source,
+        string? Error);
 
     private sealed record WorkspaceLineMatch(
         int LineIndex,
