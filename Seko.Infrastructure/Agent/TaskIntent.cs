@@ -7,5 +7,7 @@ public sealed record TaskIntent(
 {
     public bool ExecutionSuppressed { get; init; }
 
+    public bool IsWorkspaceCapabilityQuestion { get; init; }
+
     public bool RequiresProjectExplanationEvidence { get; init; }
 }

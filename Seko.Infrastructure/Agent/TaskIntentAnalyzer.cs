@@ -269,6 +269,13 @@ public static class TaskIntentAnalyzer
             workspaceWords.Any(
                 normalized.Contains);
 
+        var isWorkspaceCapabilityQuestion =
+            capabilityQuestion
+            && hasWorkspaceTarget
+            && (hasMutation
+                || hasInspection
+                || explicitBuildRequested);
+
         var requiresModification =
             !explicitExecutionSuppression
             && !explicitlyReadOnly
@@ -310,6 +317,9 @@ public static class TaskIntentAnalyzer
             {
                 ExecutionSuppressed =
                     explicitExecutionSuppression,
+
+                IsWorkspaceCapabilityQuestion =
+                    isWorkspaceCapabilityQuestion,
 
                 RequiresProjectExplanationEvidence =
                     requiresProjectExplanationEvidence

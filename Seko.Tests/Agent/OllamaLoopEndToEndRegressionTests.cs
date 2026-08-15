@@ -626,12 +626,10 @@ public sealed class OllamaLoopEndToEndRegressionTests
     }
 
     [Fact]
-    public async Task ExplicitNonActionSelfDevelopmentQuestion_NeverStartsToolTask()
+    public async Task ExplicitNonActionSelfDevelopmentQuestion_UsesDeterministicNoToolCapabilityReply()
     {
         var transport =
-            new ScriptedOllamaChatTransport(
-                MessageResponse(
-                    "Yes. I can inspect and improve my own source when you explicitly ask me to make changes."));
+            new ScriptedOllamaChatTransport();
 
         var toolHost =
             new ScriptedToolHost();
@@ -647,7 +645,7 @@ public sealed class OllamaLoopEndToEndRegressionTests
                     "hey so can you read your own code and improve/add more features to it? Just a question, not asking you to do it."));
 
         Assert.Equal(
-            "Yes. I can inspect and improve my own source when you explicitly ask me to make changes.",
+            "For an authorized active workspace, I can inspect files, modify authorized workspace files, and run builds or tests when appropriate and explicitly requested. Since you are only asking about capability here, I will not inspect or change anything now.",
             response.Content);
 
         Assert.Equal(
@@ -661,12 +659,8 @@ public sealed class OllamaLoopEndToEndRegressionTests
         Assert.Empty(
             toolHost.ExecutedCalls);
 
-        Assert.Single(
+        Assert.Empty(
             transport.Requests);
-
-        AssertToolNames(
-            transport.Requests[0],
-            Array.Empty<string>());
     }
 
     private static OllamaAgent CreateAgent(

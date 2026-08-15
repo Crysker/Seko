@@ -127,6 +127,9 @@ public sealed class FastPathRouterRegressionTests
         Assert.True(
             decision.TaskIntent.ExecutionSuppressed);
 
+        Assert.True(
+            decision.TaskIntent.IsWorkspaceCapabilityQuestion);
+
         Assert.False(
             decision.TaskIntent.RequiresWorkspaceTools);
 
@@ -135,6 +138,26 @@ public sealed class FastPathRouterRegressionTests
 
         Assert.False(
             decision.RequiresWebResearch);
+    }
+
+    [Fact]
+    public void Router_NonWorkspaceCapabilityQuestionDoesNotClaimWorkspaceCapabilityIntent()
+    {
+        var decision =
+            SekoRequestRouter.Route(
+                "Can you tell jokes? Just a question.");
+
+        Assert.True(
+            decision.UseFastConversation);
+
+        Assert.True(
+            decision.TaskIntent.ExecutionSuppressed);
+
+        Assert.False(
+            decision.TaskIntent.IsWorkspaceCapabilityQuestion);
+
+        Assert.False(
+            decision.TaskIntent.RequiresWorkspaceTools);
     }
 
     [Fact]

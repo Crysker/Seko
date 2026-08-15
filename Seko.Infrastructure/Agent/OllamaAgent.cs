@@ -94,7 +94,18 @@ public sealed class OllamaAgent :
             This is a second host-side execution boundary in addition to the
             router. If routing logic changes later, an explicitly suppressed
             capability question still cannot begin a workspace tool task.
+
+            For workspace-capability questions, do not ask the language model
+            to restate Seko's own permissions. The host already knows those
+            capabilities and can answer them deterministically without tools,
+            model drift, or accidental execution.
         */
+        if (taskIntent.ExecutionSuppressed
+            && taskIntent.IsWorkspaceCapabilityQuestion)
+        {
+            return FinishSuppressedWorkspaceCapabilityQuestion();
+        }
+
         if (routingDecision.UseFastConversation
             || taskIntent.ExecutionSuppressed)
         {
@@ -668,6 +679,20 @@ public sealed class OllamaAgent :
             }
         }
     }
+    private ChatMessage FinishSuppressedWorkspaceCapabilityQuestion()
+    {
+        Report(
+            AgentActivityKind.Thinking,
+            "Answering...");
+
+        Report(
+            AgentActivityKind.Completed,
+            "Done.");
+
+        return CreateAssistantMessage(
+            "For an authorized active workspace, I can inspect files, modify authorized workspace files, and run builds or tests when appropriate and explicitly requested. Since you are only asking about capability here, I will not inspect or change anything now.");
+    }
+
     private async Task<ChatMessage> SendFastConversationAsync(
         IReadOnlyList<ChatMessage> conversation,
         CancellationToken cancellationToken)
