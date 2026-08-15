@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,12 +16,6 @@ public sealed class OllamaAgent :
 {
     private const int MaximumConversationMessages = 8;
 
-    private static readonly HttpClient HttpClient =
-        new()
-        {
-            BaseAddress = new Uri("http://localhost:11434"),
-            Timeout = TimeSpan.FromMinutes(5)
-        };
 
     private static readonly HashSet<string> BuildRelevantExtensions =
         new(StringComparer.OrdinalIgnoreCase)
@@ -36,7 +29,8 @@ public sealed class OllamaAgent :
         };
 
     private readonly Workspace _workspace;
-    private readonly SekoToolHost _toolHost;
+    private readonly ISekoToolHost _toolHost;
+    private readonly IOllamaChatTransport _chatTransport;
     private readonly string _model;
 
     public event Action<AgentActivity>? ActivityChanged;
@@ -45,18 +39,44 @@ public sealed class OllamaAgent :
 
     public OllamaAgent(
         Workspace workspace)
+        : this(
+            workspace,
+            new SekoToolHost(
+                workspace
+                ?? throw new ArgumentNullException(
+                    nameof(workspace))),
+            new OllamaChatTransport())
+    {
+    }
+
+    public OllamaAgent(
+        Workspace workspace,
+        ISekoToolHost toolHost,
+        IOllamaChatTransport chatTransport,
+        string? model = null)
     {
         _workspace =
-            workspace;
+            workspace
+            ?? throw new ArgumentNullException(
+                nameof(workspace));
 
         _toolHost =
-            new SekoToolHost(
-                workspace);
+            toolHost
+            ?? throw new ArgumentNullException(
+                nameof(toolHost));
+
+        _chatTransport =
+            chatTransport
+            ?? throw new ArgumentNullException(
+                nameof(chatTransport));
 
         _model =
-            Environment.GetEnvironmentVariable(
-                "SEKO_OLLAMA_MODEL")
-            ?? "qwen3:8b";
+            string.IsNullOrWhiteSpace(
+                model)
+                ? Environment.GetEnvironmentVariable(
+                    "SEKO_OLLAMA_MODEL")
+                  ?? "qwen3:8b"
+                : model.Trim();
     }
 
     public async Task<ChatMessage> SendAsync(
@@ -629,54 +649,14 @@ public sealed class OllamaAgent :
             content.Trim());
     }
 
-    private async Task<JsonDocument> SendFastConversationRequestAsync(
+    private Task<JsonDocument> SendFastConversationRequestAsync(
         JsonObject request,
         CancellationToken cancellationToken)
     {
-        HttpResponseMessage response;
-
-        try
-        {
-            response =
-                await HttpClient.PostAsJsonAsync(
-                    "/api/chat",
-                    request,
-                    cancellationToken);
-        }
-        catch (OperationCanceledException exception)
-            when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new InvalidOperationException(
-                "The Ollama request timed out before the model responded. " +
-                "The task failed rather than being treated as a user Stop action.",
-                exception);
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new InvalidOperationException(
-                "I couldn't connect to Ollama. " +
-                "Make sure Ollama is running and qwen3:8b is installed.\n\n" +
-                exception.Message);
-        }
-
-        using (response)
-        {
-            var responseText =
-                await response.Content.ReadAsStringAsync(
-                    cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(
-                    $"Ollama returned HTTP {(int)response.StatusCode}.\n\n" +
-                    responseText);
-            }
-
-            return JsonDocument.Parse(
-                responseText);
-        }
+        return _chatTransport.SendAsync(
+            request,
+            cancellationToken);
     }
-
     private async Task<ChatMessage> FinishTaskAsync(
         string content,
         string userRequest,
@@ -836,48 +816,9 @@ public sealed class OllamaAgent :
                 toolDefinitions;
         }
 
-        HttpResponseMessage response;
-
-        try
-        {
-            response =
-                await HttpClient.PostAsJsonAsync(
-                    "/api/chat",
-                    request,
-                    cancellationToken);
-        }
-        catch (OperationCanceledException exception)
-            when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new InvalidOperationException(
-                "The Ollama request timed out before the model responded. " +
-                "The task failed rather than being treated as a user Stop action.",
-                exception);
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new InvalidOperationException(
-                "I couldn't connect to Ollama. " +
-                "Make sure Ollama is running and qwen3:8b is installed.\n\n" +
-                exception.Message);
-        }
-
-        using (response)
-        {
-            var responseText =
-                await response.Content.ReadAsStringAsync(
-                    cancellationToken);
-
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(
-                    $"Ollama returned HTTP {(int)response.StatusCode}.\n\n" +
-                    responseText);
-            }
-
-            return JsonDocument.Parse(
-                responseText);
-        }
+        return await _chatTransport.SendAsync(
+            request,
+            cancellationToken);
     }    private static JsonArray BuildBoundedWorkspaceMessages(
         JsonArray messages)
     {

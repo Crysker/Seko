@@ -15,7 +15,9 @@ public static class SekoAutonomyLiveLoop
                 RequiresResearch:
                     requiresWebResearch,
                 RequiresWorkspaceInspection:
-                    taskIntent.RequiresWorkspaceTools,
+                    taskIntent.RequiresWorkspaceTools
+                    && (taskIntent.RequiresModification
+                        || !taskIntent.ExplicitBuildRequested),
                 RequiresModification:
                     taskIntent.RequiresModification,
                 RequiresVerification:
