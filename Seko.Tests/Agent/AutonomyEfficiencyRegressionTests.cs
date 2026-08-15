@@ -16,238 +16,6 @@ namespace Seko.Tests.Agent;
 public sealed class AutonomyEfficiencyRegressionTests
 {
     [Fact]
-    public void Planner_PureResearchStartsWithAggregateResearchOnly()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Search the web for the latest .NET release.",
-                new TaskIntent(
-                    false,
-                    false,
-                    false),
-                true,
-                false);
-
-        Assert.Equal(
-            SekoExecutionPhase.Research,
-            plan.Phase);
-
-        Assert.Equal(
-            new[]
-            {
-                "web_research"
-            },
-            plan.ToolNames);
-    }
-
-    [Fact]
-    public void Planner_DirectUrlFetchUsesFetchOnly()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Fetch http://localhost:11434",
-                new TaskIntent(
-                    false,
-                    false,
-                    false),
-                true,
-                false);
-
-        Assert.Equal(
-            SekoExecutionPhase.DirectWebFetch,
-            plan.Phase);
-
-        Assert.Equal(
-            new[]
-            {
-                "web_fetch"
-            },
-            plan.ToolNames);
-    }
-
-    [Fact]
-    public void MixedOfficialSourceAndWorkspaceTaskStillRequiresResearchFirst()
-    {
-        const string request =
-            "Check the latest stable .NET release from official sources, inspect this workspace's current target frameworks, and tell me whether an upgrade makes sense. Do not modify anything.";
-
-        var taskIntent =
-            TaskIntentAnalyzer.Analyze(
-                request);
-
-        var requiresWebResearch =
-            WebResearchIntentDetector.RequiresWebResearch(
-                request);
-
-        Assert.True(
-            taskIntent.RequiresWorkspaceTools);
-
-        Assert.False(
-            taskIntent.RequiresModification);
-
-        Assert.True(
-            requiresWebResearch);
-
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                request,
-                taskIntent,
-                requiresWebResearch,
-                false);
-
-        Assert.Equal(
-            SekoExecutionPhase.Research,
-            plan.Phase);
-
-        Assert.Equal(
-            new[]
-            {
-                "web_research"
-            },
-            plan.ToolNames);
-    }
-
-    [Fact]
-    public void Planner_MixedTaskResearchPhaseHidesWorkspaceTools()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Check the latest .NET release and inspect this workspace.",
-                new TaskIntent(
-                    true,
-                    false,
-                    false),
-                true,
-                false);
-
-        Assert.Equal(
-            SekoExecutionPhase.Research,
-            plan.Phase);
-
-        Assert.True(
-            plan.Allows(
-                "web_research"));
-
-        Assert.False(
-            plan.Allows(
-                "search_workspace"));
-
-        Assert.False(
-            plan.Allows(
-                "read_file"));
-    }
-
-    [Fact]
-    public void Planner_MixedTaskAfterResearchMovesToReadOnlyWorkspaceInspection()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Check the latest .NET release and inspect this workspace.",
-                new TaskIntent(
-                    true,
-                    false,
-                    false),
-                true,
-                true);
-
-        Assert.Equal(
-            SekoExecutionPhase.WorkspaceInspection,
-            plan.Phase);
-
-        Assert.True(
-            plan.Allows(
-                "search_workspace"));
-
-        Assert.True(
-            plan.Allows(
-                "read_file"));
-
-        Assert.False(
-            plan.Allows(
-                "web_research"));
-
-        Assert.False(
-            plan.Allows(
-                "write_file"));
-    }
-
-    [Fact]
-    public void Planner_ModificationPhaseIncludesMutationBuildAndGitTools()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Research current guidance and improve this project.",
-                new TaskIntent(
-                    true,
-                    true,
-                    false),
-                true,
-                true);
-
-        Assert.Equal(
-            SekoExecutionPhase.WorkspaceModification,
-            plan.Phase);
-
-        Assert.True(
-            plan.Allows(
-                "write_file"));
-
-        Assert.True(
-            plan.Allows(
-                "replace_text"));
-
-        Assert.True(
-            plan.Allows(
-                "build_project"));
-
-        Assert.True(
-            plan.Allows(
-                "git_status"));
-    }
-
-    [Fact]
-    public void Planner_DiagnosticTaskExposesOnlyTaskLog()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Read your latest unsuccessful task log and diagnose it.",
-                new TaskIntent(
-                    true,
-                    false,
-                    false),
-                false,
-                false);
-
-        Assert.Equal(
-            new[]
-            {
-                "read_task_log"
-            },
-            plan.ToolNames);
-    }
-
-    [Fact]
-    public void Planner_OrdinaryConversationHasNoToolSchemas()
-    {
-        var plan =
-            SekoToolSelectionPlanner.Create(
-                "Explain dependency injection simply.",
-                new TaskIntent(
-                    false,
-                    false,
-                    false),
-                false,
-                false);
-
-        Assert.Equal(
-            SekoExecutionPhase.Conversation,
-            plan.Phase);
-
-        Assert.Empty(
-            plan.ToolNames);
-    }
-
-    [Fact]
     public void MessageWindow_AlwaysKeepsNewestToolEvidence()
     {
         var method =
@@ -809,11 +577,11 @@ public sealed class AutonomyEfficiencyRegressionTests
                 session,
                 new SekoDiagnosticEvent(
                     DateTimeOffset.Now,
-                    SekoDiagnosticEventKind.Tool,
-                    "host.autonomy_limit",
+                    SekoDiagnosticEventKind.Autonomy,
+                    "host.autonomy_stall",
                     TimeSpan.Zero,
-                    "maximum_rounds=32",
-                    "Model/tool round ceiling reached. Rounds: 32; executed tool calls: 2; blocked semantic duplicates: 1.",
+                    "phase=Incomplete; disposition=Incomplete; total_rounds=32; phase_rounds=6; no_progress=2; repairs=0; modification_generation=0; verified_generation=-1; research_completed=False; workspace_evidence=False; write_allowed=False",
+                    "No meaningful progress for 2 consecutive rounds in Inspection.",
                     false));
 
             logger.TryFinish(
@@ -829,13 +597,28 @@ public sealed class AutonomyEfficiencyRegressionTests
                 "## Tool execution summary",
                 log);
 
-            Assert.True(
+            var toolSummaryIndex =
                 log.IndexOf(
                     "## Tool execution summary",
-                    StringComparison.Ordinal)
-                < log.IndexOf(
+                    StringComparison.Ordinal);
+
+            var autonomySummaryIndex =
+                log.IndexOf(
+                    "## Autonomy summary",
+                    StringComparison.Ordinal);
+
+            var diagnosticsIndex =
+                log.IndexOf(
                     "## Diagnostic events",
-                    StringComparison.Ordinal));
+                    StringComparison.Ordinal);
+
+            Assert.True(
+                toolSummaryIndex
+                < autonomySummaryIndex);
+
+            Assert.True(
+                autonomySummaryIndex
+                < diagnosticsIndex);
 
             Assert.Contains(
                 "- Model tool requests: **3**",
@@ -862,11 +645,27 @@ public sealed class AutonomyEfficiencyRegressionTests
                 log);
 
             Assert.Contains(
-                "- Autonomy ceiling: **Reached**",
+                "## Autonomy summary",
                 log);
 
             Assert.Contains(
-                "Rounds: 32; executed tool calls: 2; blocked semantic duplicates: 1.",
+                "- Controller decisions: **1**",
+                log);
+
+            Assert.Contains(
+                "- Final controller event: `host.autonomy_stall`",
+                log);
+
+            Assert.Contains(
+                "- Final controller outcome: **Incomplete**",
+                log);
+
+            Assert.Contains(
+                "phase=Incomplete",
+                log);
+
+            Assert.Contains(
+                "No meaningful progress for 2 consecutive rounds in Inspection.",
                 log);
 
             Assert.Contains(

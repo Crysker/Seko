@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Seko.Core.Workspaces;
 using Seko.Infrastructure.Diagnostics;
 
 namespace Seko.Tests.Diagnostics;
@@ -130,6 +131,106 @@ public sealed class SekoTaskLoggerRegressionTests
             prepared);
     }
 
+    [Fact]
+    public void AutonomyDiagnostics_GetDedicatedSummaryAndStayOutOfToolCounts()
+    {
+        var directory =
+            Path.Combine(
+                Path.GetTempPath(),
+                "SekoTaskLoggerRegressionTests",
+                Guid.NewGuid()
+                    .ToString("N"));
+
+        Directory.CreateDirectory(
+            directory);
+
+        try
+        {
+            var logger =
+                new SekoTaskLogger(
+                    directory);
+
+            var session =
+                logger.TryStart(
+                    new Workspace
+                    {
+                        Id =
+                            Guid.NewGuid(),
+
+                        Name =
+                            "Diagnostics test",
+
+                        RootPath =
+                            directory
+                    },
+                    "scripted-test-model",
+                    "Inspect the project.");
+
+            Assert.NotNull(
+                session);
+
+            logger.TryRecordDiagnostic(
+                session,
+                new SekoDiagnosticEvent(
+                    DateTimeOffset.Now,
+                    SekoDiagnosticEventKind.Autonomy,
+                    "host.autonomy_start",
+                    TimeSpan.Zero,
+                    "phase=Inspection; disposition=Continue; total_rounds=0",
+                    "Host planning selected the first required execution phase.",
+                    null));
+
+            logger.TryRecordDiagnostic(
+                session,
+                new SekoDiagnosticEvent(
+                    DateTimeOffset.Now,
+                    SekoDiagnosticEventKind.Autonomy,
+                    "host.autonomy_stall",
+                    TimeSpan.Zero,
+                    "phase=Incomplete; disposition=Incomplete; no_progress=2",
+                    "No meaningful progress for 2 consecutive rounds in Inspection.",
+                    false));
+
+            logger.TryFinish(
+                session,
+                "Incomplete",
+                "Task stopped by controller.");
+
+            var log =
+                File.ReadAllText(
+                    session!.FilePath);
+
+            Assert.Contains(
+                "## Autonomy summary",
+                log);
+
+            Assert.Contains(
+                "host.autonomy_start",
+                log);
+
+            Assert.Contains(
+                "host.autonomy_stall",
+                log);
+
+            Assert.Contains(
+                "phase=Incomplete",
+                log);
+
+            Assert.Contains(
+                "No meaningful progress for 2 consecutive rounds in Inspection.",
+                log);
+
+            Assert.Contains(
+                "_No model tool calls recorded._",
+                log);
+        }
+        finally
+        {
+            Directory.Delete(
+                directory,
+                true);
+        }
+    }
     private static string InvokePrivateStringMethod(
         string methodName,
         object[] arguments)

@@ -64,6 +64,41 @@ public sealed class TaskIntentRegressionTests
     }
 
     [Theory]
+    [InlineData(
+        "Can modern C# interfaces provide default method implementations?",
+        false,
+        false)]
+    [InlineData(
+        "Explain interface implementations in C#.",
+        false,
+        false)]
+    [InlineData(
+        "Implement this interface in Seko.",
+        true,
+        true)]
+    [InlineData(
+        "Get this interface implemented in the project.",
+        true,
+        true)]
+    public void ImplementationWordFamily_DistinguishesNounsFromActions(
+        string request,
+        bool expectedWorkspaceTools,
+        bool expectedModification)
+    {
+        var intent =
+            TaskIntentAnalyzer.Analyze(
+                request);
+
+        Assert.Equal(
+            expectedWorkspaceTools,
+            intent.RequiresWorkspaceTools);
+
+        Assert.Equal(
+            expectedModification,
+            intent.RequiresModification);
+    }
+
+    [Theory]
     [InlineData("Do not modify the project.")]
     [InlineData("Don't change the code.")]
     [InlineData("Inspect only; do not write files.")]

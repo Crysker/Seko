@@ -1,0 +1,53 @@
+name: Seko CI
+
+on:
+  push:
+    branches:
+      - main
+      - "reliability-*"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: seko-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Show SDK
+        run: dotnet --info
+
+      - name: Restore
+        run: dotnet restore .\Seko.sln
+
+      - name: Build
+        run: dotnet build .\Seko.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test .\Seko.Tests\Seko.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=seko-tests.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: seko-test-results
+          path: Seko.Tests/TestResults/**/*.trx
+          if-no-files-found: ignore
+          retention-days: 7

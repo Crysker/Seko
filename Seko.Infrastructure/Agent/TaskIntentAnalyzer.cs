@@ -153,7 +153,10 @@ public static class TaskIntentAnalyzer
 
         var hasMutation =
             mutationWords.Any(
-                normalized.Contains);
+                word =>
+                    ContainsMutationTerm(
+                        normalized,
+                        word));
 
         var hasInspection =
             inspectionWords.Any(
@@ -205,6 +208,94 @@ public static class TaskIntentAnalyzer
                 requiresWorkspaceTools,
                 requiresModification,
                 explicitBuildRequested);
+    }
+
+    private static bool ContainsMutationTerm(
+        string value,
+        string term)
+    {
+        if (!term.Equals(
+                "implement",
+                StringComparison.Ordinal))
+        {
+            return
+                value.Contains(
+                    term,
+                    StringComparison.Ordinal);
+        }
+
+        /*
+            "implementation" and "implementations" are nouns and frequently
+            appear in ordinary technical explanations. Treat only actual verb
+            forms as the implementation mutation action so those questions stay
+            on the fast conversational path.
+        */
+        return
+            ContainsWholeWord(
+                value,
+                "implement")
+            || ContainsWholeWord(
+                value,
+                "implementing")
+            || ContainsWholeWord(
+                value,
+                "implemented");
+    }
+
+    private static bool ContainsWholeWord(
+        string value,
+        string word)
+    {
+        var searchIndex =
+            0;
+
+        while (searchIndex
+               <= value.Length - word.Length)
+        {
+            var index =
+                value.IndexOf(
+                    word,
+                    searchIndex,
+                    StringComparison.Ordinal);
+
+            if (index < 0)
+            {
+                return false;
+            }
+
+            var endIndex =
+                index + word.Length;
+
+            var startsAtBoundary =
+                index == 0
+                || !IsWordCharacter(
+                    value[index - 1]);
+
+            var endsAtBoundary =
+                endIndex == value.Length
+                || !IsWordCharacter(
+                    value[endIndex]);
+
+            if (startsAtBoundary
+                && endsAtBoundary)
+            {
+                return true;
+            }
+
+            searchIndex =
+                endIndex;
+        }
+
+        return false;
+    }
+
+    private static bool IsWordCharacter(
+        char value)
+    {
+        return
+            char.IsLetterOrDigit(
+                value)
+            || value == '_';
     }
 
     private static bool ContainsAnyPhrase(

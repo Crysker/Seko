@@ -15,7 +15,8 @@ using Seko.Infrastructure.Agent.Web;
 
 namespace Seko.Infrastructure.Agent;
 
-public sealed class SekoToolHost
+public sealed class SekoToolHost :
+    ISekoToolHost
 {
     private static readonly HashSet<string> SearchStopWords =
         new(StringComparer.OrdinalIgnoreCase)
