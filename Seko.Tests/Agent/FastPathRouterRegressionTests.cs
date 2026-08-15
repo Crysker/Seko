@@ -221,6 +221,25 @@ public sealed class FastPathRouterRegressionTests
     }
 
     [Fact]
+    public void FastConversationPromptPreservesOverallSekoCapabilities()
+    {
+        var systemPrompt =
+            GetNormalizedFastConversationSystemPrompt();
+
+        Assert.Contains(
+            "That describes this response path only, not Seko's overall capabilities.",
+            systemPrompt);
+
+        Assert.Contains(
+            "Seko can inspect workspace files, modify authorized workspace files, run builds and tests, and use other local tools when the user gives an actionable request.",
+            systemPrompt);
+
+        Assert.Contains(
+            "Never claim that Seko is globally unable to execute or modify code merely because this particular response is tool-free.",
+            systemPrompt);
+    }
+
+    [Fact]
     public void FastConversationPromptRejectsInventedProceduralDetails()
     {
         var systemPrompt =
