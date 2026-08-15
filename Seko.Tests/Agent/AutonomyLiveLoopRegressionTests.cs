@@ -361,16 +361,22 @@ public sealed class AutonomyLiveLoopRegressionTests
                 toolSucceeded:
                     false);
 
-        Assert.Null(
-            decision);
+        Assert.Equal(
+            SekoAutonomyDisposition.Continue,
+            decision.Disposition);
 
         Assert.Equal(
             SekoAutonomyPhase.Action,
-            state.Phase);
+            decision.State.Phase);
 
         Assert.Equal(
             0,
-            state.ModificationGeneration);
+            decision.State.ModificationGeneration);
+
+        Assert.Contains(
+            "failed tool execution does not count as meaningful progress",
+            decision.Reason,
+            StringComparison.Ordinal);
     }
 
     private static SekoAutonomyController CreateController(
